@@ -6,17 +6,91 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
-    'Microsoft YaHei', sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
   background: #f0f2f5;
   color: #1a1a1a;
   height: 100vh;
   overflow: hidden;
+  transition: background 0.25s ease, color 0.25s ease;
 }
 
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* ========== 主题 CSS 变量 ========== */
+:root {
+  --primary: #6366f1;
+  --primary-dark: #4f46e5;
+  --radius: 14px;
+
+  /* 亮色主题（默认） */
+  --bg-app: #f0f2f5;
+  --bg-chat: #f8fafc;
+  --bg-sidebar: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #f1f5f9;
+  --border: #e8eaf0;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --primary-light: #eef2ff;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.10);
+
+  /* Header 亮色 */
+  --header-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --header-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  --header-glow: rgba(118, 75, 162, 0.4);
+  --header-nav-color: rgba(255, 255, 255, 0.72);
+  --header-nav-hover-bg: rgba(255, 255, 255, 0.12);
+  --header-nav-active-bg: rgba(255, 255, 255, 0.2);
+  --header-nav-active-color: #ffffff;
+  --header-nav-active-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+  --header-stat-bg: rgba(255, 255, 255, 0.12);
+  --header-stat-border: rgba(255, 255, 255, 0.2);
+  --header-stat-color: rgba(255, 255, 255, 0.85);
+  --header-stat-lit-bg: rgba(255, 255, 255, 0.22);
+  --header-stat-lit-color: #ffffff;
+  --header-divider: rgba(255, 255, 255, 0.25);
+}
+
+[data-theme='dark'] {
+  --bg-app: #0d1117;
+  --bg-chat: #0d1117;
+  --bg-sidebar: #111827;
+  --bg-card: #161b2e;
+  --bg-hover: rgba(255, 255, 255, 0.04);
+  --border: rgba(255, 255, 255, 0.07);
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #4b5563;
+  --primary-light: rgba(99, 102, 241, 0.18);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.4);
+
+  --header-bg: linear-gradient(135deg, #0d1117 0%, #161b2e 45%, #0f1e3d 100%);
+  --header-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --header-glow: rgba(168, 85, 247, 0.7);
+  --header-nav-color: rgba(255, 255, 255, 0.5);
+  --header-nav-hover-bg: rgba(255, 255, 255, 0.05);
+  --header-nav-active-bg: rgba(99, 102, 241, 0.2);
+  --header-nav-active-color: #a5b4fc;
+  --header-nav-active-shadow: inset 0 0 0 1px rgba(165, 180, 252, 0.25);
+  --header-stat-bg: rgba(255, 255, 255, 0.04);
+  --header-stat-border: rgba(255, 255, 255, 0.07);
+  --header-stat-color: rgba(255, 255, 255, 0.4);
+  --header-stat-lit-bg: rgba(99, 102, 241, 0.14);
+  --header-stat-lit-color: rgba(165, 180, 252, 0.9);
+  --header-divider: rgba(99, 102, 241, 0.3);
+}
+
+[data-theme='dark'] body {
+  background: #0d1117;
+  color: #e2e8f0;
 }
 
 /* ========== 加载动画 ========== */

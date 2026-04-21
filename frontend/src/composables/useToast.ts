@@ -1,9 +1,9 @@
-import { message } from 'ant-design-vue'
+import { message } from "ant-design-vue";
 
 export function useToast() {
-  function show(msg: string, t: 'success' | 'error' | 'info' = 'info') {
-    message[t](msg)
+  function show(msg: string, t: "success" | "error" | "info" = "info") {
+    message[t](msg);
   }
 
-  return { show }
+  return { show };
 }

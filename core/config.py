@@ -8,7 +8,7 @@ class Config:
 
     # ---- 阿里云百炼 API ----
     BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    LLM_MODEL = "qwen-plus"
+    LLM_MODEL = "qwen3.6-plus"
     EMBEDDING_MODEL = "text-embedding-v3"
     EMBEDDING_DIMENSION = 1024   # 向量维度（text-embedding-v3 为 1024）
 

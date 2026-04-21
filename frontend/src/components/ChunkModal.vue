@@ -1,64 +1,64 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import api from '@/api'
-import { useToast } from '@/composables/useToast'
+import { ref } from "vue";
+import api from "@/api";
+import { useToast } from "@/composables/useToast";
 
-const toast = useToast()
+const toast = useToast();
 
-const visible = ref(false)
-const loading = ref(false)
-const chunkData = ref<Record<string, ChunkSource>>({})
-const activeTab = ref('')
+const visible = ref(false);
+const loading = ref(false);
+const chunkData = ref<Record<string, ChunkSource>>({});
+const activeTab = ref("");
 
 interface ChunkItem {
-  index?: number
-  chunk_index?: number
-  text?: string
-  char_count?: number
-  start?: number
-  end?: number
+  index?: number;
+  chunk_index?: number;
+  text?: string;
+  char_count?: number;
+  start?: number;
+  end?: number;
 }
 
 interface ChunkSource {
-  chunks: ChunkItem[]
-  stats: Record<string, number>
+  chunks: ChunkItem[];
+  stats: Record<string, number>;
 }
 
 function open() {
-  visible.value = true
-  loadChunks()
+  visible.value = true;
+  loadChunks();
 }
 
 async function loadChunks() {
-  loading.value = true
+  loading.value = true;
   try {
-    const res = await api.getChunks()
-    const data = res.data as Record<string, unknown>
+    const res = await api.getChunks();
+    const data = res.data as Record<string, unknown>;
 
-    if (data['chunks'] && data['stats']) {
-      chunkData.value = { '所有来源': data as unknown as ChunkSource }
+    if (data["chunks"] && data["stats"]) {
+      chunkData.value = { 所有来源: data as unknown as ChunkSource };
     } else {
-      chunkData.value = data as Record<string, ChunkSource>
+      chunkData.value = data as Record<string, ChunkSource>;
     }
 
-    const sources = Object.keys(chunkData.value)
-    activeTab.value = sources[0] ?? ''
+    const sources = Object.keys(chunkData.value);
+    activeTab.value = sources[0] ?? "";
   } catch {
-    toast.show('加载分块数据失败', 'error')
+    toast.show("加载分块数据失败", "error");
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 function getChunkIndex(c: ChunkItem) {
-  return c.index ?? c.chunk_index ?? 0
+  return c.index ?? c.chunk_index ?? 0;
 }
 
 function getCharCount(c: ChunkItem) {
-  return c.char_count ?? c.text?.length ?? 0
+  return c.char_count ?? c.text?.length ?? 0;
 }
 
-defineExpose({ open })
+defineExpose({ open });
 </script>
 
 <template>
@@ -123,7 +123,7 @@ defineExpose({ open })
                   <template v-if="c.start != null"> · 位置 {{ c.start }}-{{ c.end }}</template>
                 </span>
               </template>
-              <div class="chunk-text">{{ c.text ?? '' }}</div>
+              <div class="chunk-text">{{ c.text ?? "" }}</div>
             </a-card>
           </a-tab-pane>
         </a-tabs>

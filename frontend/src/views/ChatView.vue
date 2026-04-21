@@ -1,22 +1,22 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { marked } from 'marked'
-import { Modal } from 'ant-design-vue'
+import { ref, nextTick, onMounted, watch } from "vue";
+import { useRouter } from "vue-router";
+import { marked } from "marked";
+import { Modal } from "ant-design-vue";
 import {
   PlusOutlined,
   DeleteOutlined,
   SendOutlined,
   MessageOutlined,
   BarChartOutlined,
-} from '@ant-design/icons-vue'
-import api from '@/api'
-import type { Conversation, Message, RetrievalResult } from '@/api'
-import { useAppStore } from '@/stores/session'
-import { useToast } from '@/composables/useToast'
-import ChunkModal from '@/components/ChunkModal.vue'
-import hljs from 'highlight.js'
-import 'highlight.js/styles/atom-one-dark.css'
+} from "@ant-design/icons-vue";
+import api from "@/api";
+import type { Conversation, Message, RetrievalResult } from "@/api";
+import { useAppStore } from "@/stores/session";
+import { useToast } from "@/composables/useToast";
+import ChunkModal from "@/components/ChunkModal.vue";
+import hljs from "highlight.js";
+import "highlight.js/styles/atom-one-dark.css";
 
 // 配置 marked：使用 highlight.js 渲染代码块并注入复制按钮
 marked.use({
@@ -24,319 +24,349 @@ marked.use({
   gfm: true,
   renderer: {
     code(token) {
-      const lang = token.lang && hljs.getLanguage(token.lang) ? token.lang : 'plaintext'
-      const highlighted = hljs.highlight(token.text, { language: lang }).value
-      const langLabel = `<span class="code-lang">${lang}</span>`
-      const copyIcon = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
-      const copyBtn = `<button class="copy-code-btn">${copyIcon}复制</button>`
+      const lang = token.lang && hljs.getLanguage(token.lang) ? token.lang : "plaintext";
+      const highlighted = hljs.highlight(token.text, { language: lang }).value;
+      const langLabel = `<span class="code-lang">${lang}</span>`;
+      const copyIcon = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+      const copyBtn = `<button class="copy-code-btn">${copyIcon}复制</button>`;
       return (
         `<div class="code-wrapper">` +
         `<div class="code-toolbar">${langLabel}${copyBtn}</div>` +
         `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>` +
         `</div>`
-      )
+      );
     },
   },
-})
+});
 
-const store = useAppStore()
-const toast = useToast()
-const router = useRouter()
+const store = useAppStore();
+const toast = useToast();
+const router = useRouter();
 
 // ── 聊天状态 ──
 interface ChatMessage {
-  role: 'user' | 'assistant'
-  content: string
-  htmlContent?: string
-  retrieval?: RetrievalResult[] | null
-  retrievalMode?: string
-  streaming?: boolean
+  role: "user" | "assistant";
+  content: string;
+  htmlContent?: string;
+  retrieval?: RetrievalResult[] | null;
+  retrievalMode?: string;
+  streaming?: boolean;
 }
 
-const messages = ref<ChatMessage[]>([])
-const isStreaming = ref(false)
-const activeAbort = ref<AbortController | null>(null)
-const searchMode = ref<'hybrid' | 'vector' | 'bm25'>('hybrid')
-const questionText = ref('')
-const loadingConvs = ref(false)
-const loadingMsgs = ref(false)
+const messages = ref<ChatMessage[]>([]);
+const isStreaming = ref(false);
+const activeAbort = ref<AbortController | null>(null);
+const searchMode = ref<"hybrid" | "vector" | "bm25">("hybrid");
+const questionText = ref("");
+const loadingConvs = ref(false);
+const loadingMsgs = ref(false);
 
-const messagesEl = ref<HTMLElement>()
-const inputEl = ref<{ focus: () => void } | null>(null)
-const chunkModalRef = ref<InstanceType<typeof ChunkModal>>()
+const messagesEl = ref<HTMLElement>();
+const inputEl = ref<{ focus: () => void } | null>(null);
+const chunkModalRef = ref<InstanceType<typeof ChunkModal>>();
 
 // ── 工具函数 ──
 function scrollToBottom() {
   nextTick(() => {
-    if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
-  })
+    if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+  });
 }
 
 function renderMd(text: string, withCursor = false): string {
-  if (!text) return ''
+  if (!text) return "";
   try {
-    let html = marked.parse(text) as string
-    if (withCursor) html += '<span class="typing-cursor"></span>'
-    return html
+    let html = marked.parse(text) as string;
+    if (withCursor) html += '<span class="typing-cursor"></span>';
+    return html;
   } catch {
-    return text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+    return text.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
   }
 }
 
 function escapeHtml(s: string): string {
-  const d = document.createElement('div')
-  d.textContent = s
-  return d.innerHTML
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
 }
 
 // ── 代码复制（事件委托） ──
 function handleMessagesClick(e: MouseEvent) {
-  const btn = (e.target as HTMLElement).closest('.copy-code-btn') as HTMLElement | null
-  if (!btn) return
-  const codeEl = btn.closest('.code-wrapper')?.querySelector('pre code')
-  if (!codeEl) return
+  const btn = (e.target as HTMLElement).closest(".copy-code-btn") as HTMLElement | null;
+  if (!btn) return;
+  const codeEl = btn.closest(".code-wrapper")?.querySelector("pre code");
+  if (!codeEl) return;
 
-  navigator.clipboard.writeText(codeEl.textContent || '').then(() => {
-    const orig = btn.innerHTML
-    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 12 4 10"/></svg>已复制`
-    btn.classList.add('copied')
-    setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('copied') }, 2000)
-  }).catch(() => toast.show('复制失败', 'error'))
+  navigator.clipboard
+    .writeText(codeEl.textContent || "")
+    .then(() => {
+      const orig = btn.innerHTML;
+      btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 12 4 10"/></svg>已复制`;
+      btn.classList.add("copied");
+      setTimeout(() => {
+        btn.innerHTML = orig;
+        btn.classList.remove("copied");
+      }, 2000);
+    })
+    .catch(() => toast.show("复制失败", "error"));
 }
 
 // ── 加载数据 ──
 async function loadConversations() {
-  loadingConvs.value = true
+  loadingConvs.value = true;
   try {
-    const res = await api.getConversations()
-    store.setConversations(res.data.conversations)
+    const res = await api.getConversations();
+    store.setConversations(res.data.conversations);
     if (!store.activeConversationId && res.data.conversations.length > 0) {
-      store.setActive(res.data.conversations[0]!.id)
+      store.setActive(res.data.conversations[0]!.id);
     }
-  } catch { /* ignore */ }
-  finally { loadingConvs.value = false }
+  } catch {
+    /* ignore */
+  } finally {
+    loadingConvs.value = false;
+  }
 }
 
 async function loadStats() {
   try {
-    const res = await api.getStats()
-    store.setTotalChunks(res.data['文本块总数'] ?? 0)
-  } catch { /* ignore */ }
+    const res = await api.getStats();
+    store.setTotalChunks(res.data["文本块总数"] ?? 0);
+  } catch {
+    /* ignore */
+  }
 }
 
 async function loadMessages(convId: string) {
-  loadingMsgs.value = true
-  messages.value = []
+  loadingMsgs.value = true;
+  messages.value = [];
   try {
-    const res = await api.getConversation(convId)
+    const res = await api.getConversation(convId);
     messages.value = res.data.messages.map((m: Message) => ({
       role: m.role,
       content: m.content,
-      htmlContent: m.role === 'assistant' ? renderMd(m.content) : undefined,
+      htmlContent: m.role === "assistant" ? renderMd(m.content) : undefined,
       retrieval: m.retrieval_info?.results ?? null,
       retrievalMode: m.retrieval_info?.mode,
-    }))
-    scrollToBottom()
-  } catch { /* ignore */ }
-  finally { loadingMsgs.value = false }
+    }));
+    scrollToBottom();
+  } catch {
+    /* ignore */
+  } finally {
+    loadingMsgs.value = false;
+  }
 }
 
 onMounted(async () => {
-  await Promise.all([loadConversations(), loadStats()])
-})
+  await Promise.all([loadConversations(), loadStats()]);
+});
 
-watch(() => store.activeConversationId, (id) => {
-  if (id) loadMessages(id)
-  else messages.value = []
-})
+watch(
+  () => store.activeConversationId,
+  (id) => {
+    if (id) loadMessages(id);
+    else messages.value = [];
+  },
+);
 
 // ── 对话操作 ──
 async function newConversation() {
   try {
-    const res = await api.createConversation('新对话')
+    const res = await api.createConversation("新对话");
     const conv: Conversation = {
       id: res.data.id,
       title: res.data.title,
       created_at: null,
       updated_at: null,
       message_count: 0,
-    }
-    store.addConversation(conv)
-    store.setActive(conv.id)
-    messages.value = []
+    };
+    store.addConversation(conv);
+    store.setActive(conv.id);
+    messages.value = [];
   } catch {
-    toast.show('创建对话失败', 'error')
+    toast.show("创建对话失败", "error");
   }
 }
 
 function selectConversation(id: string) {
-  if (id === store.activeConversationId || isStreaming.value) return
-  store.setActive(id)
+  if (id === store.activeConversationId || isStreaming.value) return;
+  store.setActive(id);
 }
 
 function deleteConversation(conv: Conversation) {
   Modal.confirm({
-    title: '确认删除',
+    title: "确认删除",
     content: `确定删除对话「${conv.title}」？此操作不可撤销。`,
-    okText: '删除',
-    okType: 'danger',
-    cancelText: '取消',
+    okText: "删除",
+    okType: "danger",
+    cancelText: "取消",
     async onOk() {
       try {
-        await api.deleteConversation(conv.id)
-        store.removeConversation(conv.id)
-        toast.show('对话已删除', 'success')
+        await api.deleteConversation(conv.id);
+        store.removeConversation(conv.id);
+        toast.show("对话已删除", "success");
       } catch {
-        toast.show('删除失败', 'error')
+        toast.show("删除失败", "error");
       }
     },
-  })
+  });
 }
 
 // ── 发送消息 ──
 function handleKeyDown(e: KeyboardEvent) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    sendQuestion()
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendQuestion();
   }
 }
 
 async function sendQuestion() {
-  const question = questionText.value.trim()
-  if (!question || isStreaming.value) return
+  const question = questionText.value.trim();
+  if (!question || isStreaming.value) return;
   if (!store.activeConversationId) {
-    toast.show('请先选择或新建一个对话', 'error')
-    return
+    toast.show("请先选择或新建一个对话", "error");
+    return;
   }
 
-  messages.value.push({ role: 'user', content: question })
-  questionText.value = ''
-  scrollToBottom()
+  messages.value.push({ role: "user", content: question });
+  questionText.value = "";
+  console.log("questionText==========>", questionText.value);
+  scrollToBottom();
 
-  const assistantIdx = messages.value.length
-  messages.value.push({ role: 'assistant', content: '', htmlContent: '', streaming: true })
+  const assistantIdx = messages.value.length;
+  messages.value.push({ role: "assistant", content: "", htmlContent: "", streaming: true });
 
-  isStreaming.value = true
-  let streamedText = ''
-  const abortCtrl = new AbortController()
-  activeAbort.value = abortCtrl
+  isStreaming.value = true;
+  let streamedText = "";
+  const abortCtrl = new AbortController();
+  activeAbort.value = abortCtrl;
 
   try {
-    const response = await api.queryStream(store.activeConversationId!, question, searchMode.value, abortCtrl.signal)
+    const response = await api.queryStream(
+      store.activeConversationId!,
+      question,
+      searchMode.value,
+      abortCtrl.signal,
+    );
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.detail || '请求失败')
+      const err = await response.json();
+      throw new Error(err.detail || "请求失败");
     }
 
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
     while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+      const { done, value } = await reader.read();
+      if (done) break;
 
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n\n')
-      buffer = lines.pop()!
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop()!;
 
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
+        if (!line.startsWith("data: ")) continue;
         try {
-          const event = JSON.parse(line.slice(6))
-          if (event.type === 'retrieval') {
-            const msg = messages.value[assistantIdx]
+          const event = JSON.parse(line.slice(6));
+          if (event.type === "retrieval") {
+            const msg = messages.value[assistantIdx];
             if (msg) {
-              msg.retrieval = event.data.results
-              msg.retrievalMode = event.data.mode
+              msg.retrieval = event.data.results;
+              msg.retrievalMode = event.data.mode;
             }
-          } else if (event.type === 'content') {
-            streamedText += event.content
-            const msg = messages.value[assistantIdx]
+          } else if (event.type === "content") {
+            streamedText += event.content;
+            const msg = messages.value[assistantIdx];
             if (msg) {
-              msg.content = streamedText
+              msg.content = streamedText;
               // 流式渲染：带打字机光标
-              msg.htmlContent = renderMd(streamedText, true)
+              msg.htmlContent = renderMd(streamedText, true);
             }
-            scrollToBottom()
-          } else if (event.type === 'done') {
-            await loadConversations()
-          } else if (event.type === 'title') {
+            scrollToBottom();
+          } else if (event.type === "done") {
+            await loadConversations();
+          } else if (event.type === "title") {
             // 更新当前对话的标题（无需重新拉取对话列表，直接更新 store）
-            const conv = store.conversations.find(c => c.id === store.activeConversationId)
-            if (conv) conv.title = event.title
-          } else if (event.type === 'error') {
-            streamedText += `\n\n❌ 错误: ${event.message}`
-            const msg = messages.value[assistantIdx]
+            const conv = store.conversations.find((c) => c.id === store.activeConversationId);
+            if (conv) conv.title = event.title;
+          } else if (event.type === "error") {
+            streamedText += `\n\n❌ 错误: ${event.message}`;
+            const msg = messages.value[assistantIdx];
             if (msg) {
-              msg.content = streamedText
-              msg.htmlContent = renderMd(streamedText)
+              msg.content = streamedText;
+              msg.htmlContent = renderMd(streamedText);
             }
-            toast.show(event.message, 'error')
+            toast.show(event.message, "error");
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     }
 
     // 最终渲染（去掉光标）
-    const msg = messages.value[assistantIdx]
+    const msg = messages.value[assistantIdx];
     if (msg) {
-      msg.content = streamedText
-      msg.htmlContent = renderMd(streamedText)
-      msg.streaming = false
+      msg.content = streamedText;
+      msg.htmlContent = renderMd(streamedText);
+      msg.streaming = false;
     }
-    scrollToBottom()
-  } catch (e: any) {
-    const msg = messages.value[assistantIdx]
+    scrollToBottom();
+  } catch (e: unknown) {
+    const msg = messages.value[assistantIdx];
     if (abortCtrl.signal.aborted) {
       // 用户主动中止
       if (msg) {
-        msg.content = streamedText || '（已停止生成）'
+        msg.content = streamedText || "（已停止生成）";
         msg.htmlContent = streamedText
           ? renderMd(streamedText)
-          : '<p style="color:#9ca3af">（已停止生成）</p>'
-        msg.streaming = false
+          : '<p style="color:#9ca3af">（已停止生成）</p>';
+        msg.streaming = false;
       }
     } else {
       if (msg) {
-        msg.content = `❌ 出错: ${e.message}`
-        msg.htmlContent = `<p>❌ 出错: ${escapeHtml(e.message)}</p>`
-        msg.streaming = false
+        msg.content = `❌ 出错: ${(e as Error).message}`;
+        msg.htmlContent = `<p>❌ 出错: ${escapeHtml((e as Error).message)}</p>`;
+        msg.streaming = false;
       }
-      toast.show(e.message, 'error')
+      toast.show((e as Error).message, "error");
     }
   } finally {
-    activeAbort.value = null
-    isStreaming.value = false
-    nextTick(() => inputEl.value?.focus())
+    activeAbort.value = null;
+    isStreaming.value = false;
+    nextTick(() => inputEl.value?.focus());
   }
 }
 
 // ── 辅助 ──
 function getModeLabel(mode: string) {
-  return { hybrid: '混合检索', vector: '语义向量', bm25: '关键词' }[mode] ?? mode
+  return { hybrid: "混合检索", vector: "语义向量", bm25: "关键词" }[mode] ?? mode;
 }
 
 function getScoreStr(r: RetrievalResult): string {
-  if (r.rrf_score != null) return `RRF ${r.rrf_score.toFixed(4)}`
-  if (r.similarity != null) return `cos ${r.similarity.toFixed(4)}`
-  if (r.bm25_score != null) return `BM25 ${r.bm25_score.toFixed(4)}`
-  return ''
+  if (r.rrf_score != null) return `RRF ${r.rrf_score.toFixed(4)}`;
+  if (r.similarity != null) return `cos ${r.similarity.toFixed(4)}`;
+  if (r.bm25_score != null) return `BM25 ${r.bm25_score.toFixed(4)}`;
+  return "";
 }
 
 function goToSource(source: string) {
-  store.setHighlightFile(source)
-  router.push('/files')
+  store.setHighlightFile(source);
+  router.push("/files");
 }
 
 function stopGeneration() {
-  activeAbort.value?.abort()
+  activeAbort.value?.abort();
 }
 
 function formatTime(iso: string | null): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 </script>
 
@@ -360,7 +390,9 @@ function formatTime(iso: string | null): string {
         <div class="kb-stat-left">
           <span class="kb-dot" :class="store.totalChunks > 0 ? 'active' : 'inactive'"></span>
           <span>知识库</span>
-          <span class="kb-count">{{ store.totalChunks > 0 ? store.totalChunks + ' 块' : '未上传' }}</span>
+          <span class="kb-count">{{
+            store.totalChunks > 0 ? store.totalChunks + " 块" : "未上传"
+          }}</span>
         </div>
         <a-button size="small" type="text" class="kb-btn" @click="chunkModalRef?.open()">
           <template #icon><BarChartOutlined /></template>
@@ -379,7 +411,9 @@ function formatTime(iso: string | null): string {
             <div class="conv-icon">💬</div>
             <div class="conv-info">
               <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
-              <div class="conv-meta">{{ conv.message_count }} 条 · {{ formatTime(conv.updated_at) }}</div>
+              <div class="conv-meta">
+                {{ conv.message_count }} 条 · {{ formatTime(conv.updated_at) }}
+              </div>
             </div>
             <a-button
               class="conv-delete"
@@ -403,12 +437,11 @@ function formatTime(iso: string | null): string {
     <a-layout class="chat-panel">
       <!-- 消息区域 -->
       <div ref="messagesEl" class="messages" @click="handleMessagesClick">
-
         <!-- 欢迎页 -->
         <div v-if="!store.activeConversationId" class="welcome">
           <div class="welcome-emoji">🤖</div>
           <h2>RAG 知识问答助手</h2>
-          <p>上传文档后，在左侧新建对话，<br>即可开始提问</p>
+          <p>上传文档后，在左侧新建对话，<br />即可开始提问</p>
           <div class="welcome-tips">
             <div class="tip-item">📄 支持 PDF、TXT、Markdown</div>
             <div class="tip-item">🔍 混合检索，精准定位</div>
@@ -419,7 +452,7 @@ function formatTime(iso: string | null): string {
         <!-- 加载中 -->
         <div v-else-if="loadingMsgs" class="welcome">
           <a-spin size="large" />
-          <p style="margin-top:16px;color:#94a3b8">加载消息中…</p>
+          <p style="margin-top: 16px; color: #94a3b8">加载消息中…</p>
         </div>
 
         <!-- 空对话提示 -->
@@ -442,13 +475,21 @@ function formatTime(iso: string | null): string {
                 <template #header>
                   <span class="retrieval-summary">
                     🔍 检索到 {{ msg.retrieval.length }} 个片段
-                    <span class="retrieval-mode-tag">{{ getModeLabel(msg.retrievalMode ?? 'hybrid') }}</span>
+                    <span class="retrieval-mode-tag">{{
+                      getModeLabel(msg.retrievalMode ?? "hybrid")
+                    }}</span>
                   </span>
                 </template>
                 <div class="retrieval-list">
                   <div v-for="(r, ri) in msg.retrieval" :key="ri" class="retrieval-item">
                     <span class="retrieval-idx">{{ ri + 1 }}</span>
-                    <button class="retrieval-source" @click="goToSource(r.source)" :title="'跳转到：' + r.source">{{ r.source }}</button>
+                    <button
+                      class="retrieval-source"
+                      @click="goToSource(r.source)"
+                      :title="'跳转到：' + r.source"
+                    >
+                      {{ r.source }}
+                    </button>
                     <span class="retrieval-score">{{ getScoreStr(r) }}</span>
                   </div>
                 </div>
@@ -499,11 +540,7 @@ function formatTime(iso: string | null): string {
                 ]"
               />
             </div>
-            <a-button
-              v-if="isStreaming"
-              class="stop-btn"
-              @click="stopGeneration"
-            >
+            <a-button v-if="isStreaming" class="stop-btn" @click="stopGeneration">
               ⏹ 停止
             </a-button>
             <a-button
@@ -526,25 +563,13 @@ function formatTime(iso: string | null): string {
 </template>
 
 <style scoped>
-/* ========== CSS 变量 ========== */
+/* ========== 布局 ========== */
 .chat-layout {
-  --primary: #6366f1;
-  --primary-dark: #4f46e5;
-  --primary-light: #eef2ff;
-  --bg-chat: #f8fafc;
-  --bg-sidebar: #ffffff;
-  --border: #e8eaf0;
-  --text-primary: #1e293b;
-  --text-secondary: #64748b;
-  --text-muted: #94a3b8;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,.08);
-  --shadow-md: 0 4px 12px rgba(0,0,0,.08);
-  --radius: 14px;
-
   flex: 1;
   overflow: hidden;
   height: 100%;
   background: var(--bg-chat);
+  transition: background 0.25s ease;
 }
 
 /* ========== 左侧面板 ========== */
@@ -610,12 +635,22 @@ function formatTime(iso: string | null): string {
   border-radius: 50%;
 }
 
-.kb-dot.active { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; }
-.kb-dot.inactive { background: var(--text-muted); }
+.kb-dot.active {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+}
+.kb-dot.inactive {
+  background: var(--text-muted);
+}
 
-.kb-count { font-weight: 600; color: var(--text-primary); }
+.kb-count {
+  font-weight: 600;
+  color: var(--text-primary);
+}
 
-.kb-btn { color: var(--text-muted) !important; }
+.kb-btn {
+  color: var(--text-muted) !important;
+}
 
 /* 对话列表 */
 .conv-list {
@@ -623,11 +658,16 @@ function formatTime(iso: string | null): string {
   overflow-y: auto;
   padding: 6px 8px;
   scrollbar-width: thin;
-  scrollbar-color: #e2e8f0 transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
 }
 
-.conv-list::-webkit-scrollbar { width: 4px; }
-.conv-list::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
+.conv-list::-webkit-scrollbar {
+  width: 4px;
+}
+.conv-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
 
 .conv-item {
   display: flex;
@@ -640,32 +680,42 @@ function formatTime(iso: string | null): string {
   position: relative;
 }
 
-.conv-item:hover { background: #f1f5f9; }
+.conv-item:hover {
+  background: var(--bg-hover);
+}
 
 .conv-item.active {
   background: var(--primary-light);
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.2);
 }
 
 .conv-icon {
   font-size: 16px;
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.5;
 }
 
-.conv-item.active .conv-icon { opacity: 1; }
+.conv-item.active .conv-icon {
+  opacity: 0.9;
+}
 
-.conv-info { flex: 1; min-width: 0; }
+.conv-info {
+  flex: 1;
+  min-width: 0;
+}
 
 .conv-title {
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.conv-item.active .conv-title { color: var(--primary); }
+.conv-item.active .conv-title {
+  color: #a5b4fc;
+}
 
 .conv-meta {
   font-size: 11px;
@@ -679,7 +729,9 @@ function formatTime(iso: string | null): string {
   flex-shrink: 0;
 }
 
-.conv-item:hover .conv-delete { opacity: 1; }
+.conv-item:hover .conv-delete {
+  opacity: 1;
+}
 
 .conv-empty {
   text-align: center;
@@ -687,8 +739,14 @@ function formatTime(iso: string | null): string {
   color: var(--text-muted);
 }
 
-.conv-empty-icon { font-size: 32px; margin-bottom: 8px; }
-.conv-empty div { font-size: 12px; }
+.conv-empty-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+  opacity: 0.4;
+}
+.conv-empty div {
+  font-size: 12px;
+}
 
 /* ========== 右侧聊天面板 ========== */
 .chat-panel {
@@ -705,11 +763,16 @@ function formatTime(iso: string | null): string {
   flex-direction: column;
   gap: 20px;
   scrollbar-width: thin;
-  scrollbar-color: #e2e8f0 transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.07) transparent;
 }
 
-.messages::-webkit-scrollbar { width: 5px; }
-.messages::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
+.messages::-webkit-scrollbar {
+  width: 5px;
+}
+.messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 4px;
+}
 
 /* ========== 欢迎页 ========== */
 .welcome {
@@ -719,7 +782,11 @@ function formatTime(iso: string | null): string {
   max-width: 420px;
 }
 
-.welcome-emoji { font-size: 52px; margin-bottom: 16px; }
+.welcome-emoji {
+  font-size: 52px;
+  margin-bottom: 16px;
+  opacity: 0.8;
+}
 
 .welcome h2 {
   font-size: 22px;
@@ -748,7 +815,7 @@ function formatTime(iso: string | null): string {
   gap: 8px;
   font-size: 13px;
   color: var(--text-secondary);
-  background: white;
+  background: var(--bg-card);
   padding: 9px 14px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -763,8 +830,14 @@ function formatTime(iso: string | null): string {
 }
 
 @keyframes msg-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .message.user {
@@ -795,13 +868,13 @@ function formatTime(iso: string | null): string {
 .user-avatar {
   background: linear-gradient(135deg, #6366f1, #818cf8);
   color: white;
-  box-shadow: 0 2px 8px rgba(99,102,241,.35);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
 }
 
 .ai-avatar {
   background: linear-gradient(135deg, #0ea5e9, #6366f1);
   color: white;
-  box-shadow: 0 2px 8px rgba(14,165,233,.3);
+  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
 }
 
 /* 气泡 */
@@ -819,12 +892,13 @@ function formatTime(iso: string | null): string {
   color: white;
   border-bottom-right-radius: 4px;
   white-space: pre-wrap;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.35);
 }
 
 .ai-bubble {
-  background: white;
+  background: var(--bg-card);
   color: var(--text-primary);
+  border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
   box-shadow: var(--shadow-md);
 }
@@ -834,7 +908,7 @@ function formatTime(iso: string | null): string {
   display: inline-block;
   width: 2px;
   height: 1em;
-  background: var(--primary);
+  background: #a5b4fc;
   margin-left: 2px;
   vertical-align: text-bottom;
   border-radius: 1px;
@@ -842,8 +916,13 @@ function formatTime(iso: string | null): string {
 }
 
 @keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* ========== Markdown 内容样式 ========== */
@@ -854,25 +933,47 @@ function formatTime(iso: string | null): string {
   margin: 14px 0 6px;
   color: var(--text-primary);
 }
-.ai-bubble :deep(h1) { font-size: 1.2em; }
-.ai-bubble :deep(h2) { font-size: 1.1em; }
-.ai-bubble :deep(h3) { font-size: 1em; }
+.ai-bubble :deep(h1) {
+  font-size: 1.2em;
+}
+.ai-bubble :deep(h2) {
+  font-size: 1.1em;
+}
+.ai-bubble :deep(h3) {
+  font-size: 1em;
+}
 
-.ai-bubble :deep(p) { margin: 6px 0; }
-.ai-bubble :deep(> p:first-child) { margin-top: 0; }
-.ai-bubble :deep(> p:last-child)  { margin-bottom: 0; }
+.ai-bubble :deep(p) {
+  margin: 6px 0;
+}
+.ai-bubble :deep(> p:first-child) {
+  margin-top: 0;
+}
+.ai-bubble :deep(> p:last-child) {
+  margin-bottom: 0;
+}
 
 .ai-bubble :deep(ul),
-.ai-bubble :deep(ol) { margin: 6px 0; padding-left: 20px; }
-.ai-bubble :deep(li) { margin: 3px 0; }
+.ai-bubble :deep(ol) {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.ai-bubble :deep(li) {
+  margin: 3px 0;
+}
 
 .ai-bubble :deep(code) {
-  background: #f1f5f9;
+  background: rgba(99, 102, 241, 0.12);
   padding: 2px 6px;
   border-radius: 5px;
-  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.87em;
-  color: #e11d48;
+  color: #7c3aed;
+}
+
+:root[data-theme='dark'] .ai-bubble :deep(code) {
+  background: rgba(99, 102, 241, 0.15);
+  color: #f472b6;
 }
 
 /* ── 代码块容器 ── */
@@ -895,7 +996,7 @@ function formatTime(iso: string | null): string {
 .ai-bubble :deep(.code-lang) {
   font-size: 11px;
   color: #7c8db5;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   text-transform: lowercase;
 }
 
@@ -927,7 +1028,6 @@ function formatTime(iso: string | null): string {
 }
 
 .ai-bubble :deep(pre) {
-  /* highlight.js atom-one-dark 主题会自动设置背景色 */
   margin: 0;
   overflow-x: auto;
   font-size: 13px;
@@ -962,33 +1062,52 @@ function formatTime(iso: string | null): string {
 
 .ai-bubble :deep(th),
 .ai-bubble :deep(td) {
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 6px 10px;
   text-align: left;
 }
 
 .ai-bubble :deep(th) {
-  background: #f8fafc;
+  background: rgba(255, 255, 255, 0.05);
   font-weight: 600;
   color: var(--text-primary);
 }
 
-.ai-bubble :deep(strong) { font-weight: 700; }
-.ai-bubble :deep(a) { color: var(--primary); text-decoration: none; }
-.ai-bubble :deep(a:hover) { text-decoration: underline; }
-.ai-bubble :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.ai-bubble :deep(strong) {
+  font-weight: 700;
+  color: #e2e8f0;
+}
+.ai-bubble :deep(a) {
+  color: #818cf8;
+  text-decoration: none;
+}
+.ai-bubble :deep(a:hover) {
+  text-decoration: underline;
+}
+.ai-bubble :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
 
 /* ========== 检索来源 ========== */
 .retrieval-collapse {
   align-self: flex-start;
   max-width: 76%;
-  margin-left: 44px;  /* 与 AI 气泡对齐 */
+  margin-left: 44px;
 }
 
 .retrieval-collapse :deep(.ant-collapse-header) {
   padding: 6px 12px !important;
-  background: #f8fafc !important;
+  background: var(--bg-card) !important;
   border-radius: 8px !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.retrieval-collapse :deep(.ant-collapse-content) {
+  background: var(--bg-card) !important;
+  border-top: 1px solid var(--border) !important;
 }
 
 .retrieval-collapse :deep(.ant-collapse-content-box) {
@@ -1005,14 +1124,16 @@ function formatTime(iso: string | null): string {
 
 .retrieval-mode-tag {
   background: var(--primary-light);
-  color: var(--primary);
+  color: #a5b4fc;
   padding: 1px 7px;
   border-radius: 10px;
   font-size: 11px;
   font-weight: 500;
 }
 
-.retrieval-list { padding-top: 4px; }
+.retrieval-list {
+  padding-top: 4px;
+}
 
 .retrieval-item {
   display: flex;
@@ -1020,10 +1141,12 @@ function formatTime(iso: string | null): string {
   gap: 8px;
   padding: 4px 0;
   font-size: 12px;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.retrieval-item:last-child { border-bottom: none; }
+.retrieval-item:last-child {
+  border-bottom: none;
+}
 
 .retrieval-idx {
   width: 18px;
@@ -1047,7 +1170,7 @@ function formatTime(iso: string | null): string {
   text-align: left;
   font: inherit;
   font-size: 0.82rem;
-  color: #4f46e5;
+  color: #818cf8;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -1057,7 +1180,7 @@ function formatTime(iso: string | null): string {
   transition: color 0.15s;
 }
 .retrieval-source:hover {
-  color: #6366f1;
+  color: #a5b4fc;
 }
 
 .retrieval-score {
@@ -1072,13 +1195,14 @@ function formatTime(iso: string | null): string {
   padding: 12px 24px 18px;
   background: var(--bg-chat);
   flex-shrink: 0;
+  border-top: 1px solid var(--border);
 }
 
 .input-card {
-  background: white;
+  background: var(--bg-card);
   border-radius: var(--radius);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-md);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 -2px 20px rgba(0, 0, 0, 0.3), 0 4px 20px rgba(0, 0, 0, 0.3);
   padding: 12px 14px 10px;
   display: flex;
   flex-direction: column;
@@ -1093,10 +1217,15 @@ function formatTime(iso: string | null): string {
   line-height: 1.6;
   padding: 0 !important;
   background: transparent !important;
+  color: var(--text-primary) !important;
 }
 
 .question-input :deep(.ant-input:focus) {
   box-shadow: none !important;
+}
+
+.question-input :deep(textarea::placeholder) {
+  color: var(--text-muted) !important;
 }
 
 .input-footer {
@@ -1116,6 +1245,25 @@ function formatTime(iso: string | null): string {
   color: var(--text-muted);
 }
 
+/* 检索模式 segmented 深色适配 */
+.mode-picker :deep(.ant-segmented) {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 8px !important;
+}
+.mode-picker :deep(.ant-segmented-item-label) {
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+}
+.mode-picker :deep(.ant-segmented-item-selected .ant-segmented-item-label) {
+  color: #a5b4fc !important;
+}
+.mode-picker :deep(.ant-segmented-item-selected) {
+  background: rgba(99, 102, 241, 0.25) !important;
+}
+.mode-picker :deep(.ant-segmented-thumb) {
+  background: rgba(99, 102, 241, 0.25) !important;
+}
+
 .send-btn {
   background: linear-gradient(135deg, #6366f1, #818cf8) !important;
   border: none !important;
@@ -1123,8 +1271,10 @@ function formatTime(iso: string | null): string {
   height: 36px !important;
   padding: 0 18px !important;
   font-weight: 500;
-  box-shadow: 0 2px 8px rgba(99,102,241,.35) !important;
-  transition: opacity 0.15s, transform 0.1s !important;
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.4) !important;
+  transition:
+    opacity 0.15s,
+    transform 0.1s !important;
 }
 
 .send-btn:not(:disabled):hover {
@@ -1137,13 +1287,14 @@ function formatTime(iso: string | null): string {
 }
 
 .send-btn:disabled {
-  opacity: 0.45 !important;
+  opacity: 0.35 !important;
   box-shadow: none !important;
 }
 
 .stop-btn {
-  border-color: #f87171 !important;
-  color: #ef4444 !important;
+  border-color: rgba(248, 113, 113, 0.5) !important;
+  color: #f87171 !important;
+  background: rgba(239, 68, 68, 0.08) !important;
   border-radius: 9px !important;
   height: 36px !important;
   padding: 0 18px !important;
@@ -1151,6 +1302,6 @@ function formatTime(iso: string | null): string {
   transition: background 0.15s !important;
 }
 .stop-btn:hover {
-  background: #fef2f2 !important;
+  background: rgba(239, 68, 68, 0.15) !important;
 }
 </style>

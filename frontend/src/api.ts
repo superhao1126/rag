@@ -19,12 +19,10 @@ export default {
 
   getFiles: () => http.get<{ files: KbFile[] }>('/files'),
 
-  deleteFile: (source: string) =>
-    http.delete(`/files/${encodeURIComponent(source)}`),
+  deleteFile: (source: string) => http.delete(`/files/${encodeURIComponent(source)}`),
 
   // ---- 对话管理 ----
-  getConversations: () =>
-    http.get<{ conversations: Conversation[] }>('/conversations'),
+  getConversations: () => http.get<{ conversations: Conversation[] }>('/conversations'),
 
   createConversation: (title?: string) =>
     http.post<{ id: string; title: string }>('/conversations', { title: title ?? '新对话' }),
@@ -32,14 +30,12 @@ export default {
   getConversation: (id: string) =>
     http.get<{ conversation_id: string; messages: Message[] }>(`/conversations/${id}`),
 
-  deleteConversation: (id: string) =>
-    http.delete(`/conversations/${id}`),
+  deleteConversation: (id: string) => http.delete(`/conversations/${id}`),
 
   // ---- 统计 ----
   getStats: () => http.get('/stats'),
 
-  getChunks: (source?: string) =>
-    http.get('/chunks', { params: source ? { source } : undefined }),
+  getChunks: (source?: string) => http.get('/chunks', { params: source ? { source } : undefined }),
 
   /** SSE 流式问答 */
   queryStream: (conversationId: string, question: string, mode: string, signal?: AbortSignal) =>
