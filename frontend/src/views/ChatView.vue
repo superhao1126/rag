@@ -413,79 +413,60 @@ async function sendQuestion(opts: { regenerate?: boolean; question?: string } = 
   activeAbort.value = abortCtrl;
 
   try {
-    const response = await api.queryStream(
-      store.activeConversationId!,
-      question,
-      searchMode.value,
-      enableThinking.value,
-      abortCtrl.signal,
-      regenerate,
-    );
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.detail || "请求失败");
-    }
-
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n\n");
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        try {
-          const event = JSON.parse(line.slice(6));
-          if (event.type === "retrieval") {
-            const msg = messages.value[assistantIdx];
-            if (msg) {
-              msg.retrieval = event.data.results;
-              msg.retrievalMode = event.data.mode;
-            }
-          } else if (event.type === "thinking") {
-            const msg = messages.value[assistantIdx];
-            if (msg) {
-              msg.thinking = (msg.thinking || "") + event.content;
-              msg.thinkingHtml = renderMd(msg.thinking, true, 0);
-            }
-            scrollToBottom();
-          } else if (event.type === "content") {
-            streamedText += event.content;
-            const msg = messages.value[assistantIdx];
-            if (msg) {
-              msg.content = streamedText;
-              // 流式渲染：带打字机光标
-              msg.htmlContent = renderMd(streamedText, true, msg.retrieval?.length ?? 0);
-            }
-            scrollToBottom();
-          } else if (event.type === "done") {
-            const msg = messages.value[assistantIdx];
-            if (msg && event.message_id) msg.id = event.message_id;
-            await loadConversations();
-          } else if (event.type === "title") {
-            // 更新当前对话的标题（无需重新拉取对话列表，直接更新 store）
-            const conv = store.conversations.find((c) => c.id === store.activeConversationId);
-            if (conv) conv.title = event.title;
-          } else if (event.type === "error") {
-            streamedText += `\n\n❌ 错误: ${event.message}`;
-            const msg = messages.value[assistantIdx];
-            if (msg) {
-              msg.content = streamedText;
-              msg.htmlContent = renderMd(streamedText, false, msg.retrieval?.length ?? 0);
-            }
-            toast.show(event.message, "error");
+    await api.queryWithEvents(
+      {
+        conversationId: store.activeConversationId!,
+        question,
+        mode: searchMode.value,
+        enableThinking: enableThinking.value,
+        regenerate,
+        signal: abortCtrl.signal,
+      },
+      {
+        onRetrieval: (mode, results) => {
+          const msg = messages.value[assistantIdx];
+          if (msg) {
+            msg.retrieval = results;
+            msg.retrievalMode = mode;
           }
-        } catch {
-          /* ignore */
-        }
-      }
-    }
+        },
+        onThinking: (chunk) => {
+          const msg = messages.value[assistantIdx];
+          if (msg) {
+            msg.thinking = (msg.thinking || "") + chunk;
+            msg.thinkingHtml = renderMd(msg.thinking, true, 0);
+          }
+          scrollToBottom();
+        },
+        onContent: (chunk) => {
+          streamedText += chunk;
+          const msg = messages.value[assistantIdx];
+          if (msg) {
+            msg.content = streamedText;
+            msg.htmlContent = renderMd(streamedText, true, msg.retrieval?.length ?? 0);
+          }
+          scrollToBottom();
+        },
+        onTitle: (title) => {
+          const conv = store.conversations.find((c) => c.id === store.activeConversationId);
+          if (conv) conv.title = title;
+        },
+        onDone: async ({ message_id }) => {
+          const msg = messages.value[assistantIdx];
+          if (msg && message_id) msg.id = message_id;
+          await loadConversations();
+        },
+        onError: (errMsg) => {
+          streamedText += `\n\n❌ 错误: ${errMsg}`;
+          const msg = messages.value[assistantIdx];
+          if (msg) {
+            msg.content = streamedText;
+            msg.htmlContent = renderMd(streamedText, false, msg.retrieval?.length ?? 0);
+          }
+          toast.show(errMsg, "error");
+        },
+      },
+    );
 
     // 最终渲染（去掉光标）
     const msg = messages.value[assistantIdx];
@@ -493,7 +474,6 @@ async function sendQuestion(opts: { regenerate?: boolean; question?: string } = 
       msg.content = streamedText;
       msg.htmlContent = renderMd(streamedText, false, msg.retrieval?.length ?? 0);
       if (msg.thinking) msg.thinkingHtml = renderMd(msg.thinking, false, 0);
-      // 思考结束后默认折叠（保留可展开），避免占据视线
       msg.thinkingExpanded = false;
       msg.streaming = false;
     }
@@ -520,6 +500,9 @@ async function sendQuestion(opts: { regenerate?: boolean; question?: string } = 
   } finally {
     activeAbort.value = null;
     isStreaming.value = false;
+    // 兜底：确保该助手消息的光标一定关闭（防止异常路径漏掉）
+    const finalMsg = messages.value[assistantIdx];
+    if (finalMsg && finalMsg.streaming) finalMsg.streaming = false;
     nextTick(() => inputEl.value?.focus());
   }
 }
@@ -768,7 +751,7 @@ function formatTime(iso: string | null): string {
                   <div v-show="msg.thinkingExpanded" class="thinking-body" v-html="msg.thinkingHtml"></div>
                 </div>
                 <div v-if="msg.content || !msg.thinking" class="bubble ai-bubble" :class="{ streaming: msg.streaming }"
-                  v-html="msg.htmlContent || '<span class=\'typing-cursor\'></span>'"></div>
+                  v-html="msg.htmlContent || (msg.streaming ? '<span class=\'typing-cursor\'></span>' : '')"></div>
                 <!-- 反馈工具栏 -->
                 <div v-if="!msg.streaming && msg.content" class="msg-actions">
                   <button class="msg-action-btn" :disabled="isStreaming" @click="regenerateMessage(idx)" title="重新生成">

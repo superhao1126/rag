@@ -11,6 +11,10 @@ import { queryApi } from "./query";
 import { statsApi } from "./stats";
 
 export { http, ApiError } from "./http";
+export { consumeSSE, SSEHttpError } from "./sse";
+export type { SSEHandlers } from "./sse";
+export type { UploadEvent, UploadStreamHandlers } from "./files";
+export type { QueryEvent, QueryStreamArgs, QueryStreamHandlers } from "./query";
 export * from "./types";
 export { filesApi, conversationsApi, feedbackApi, queryApi, statsApi };
 

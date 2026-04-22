@@ -173,41 +173,22 @@ async function uploadFile(file: File) {
   tasks.value.push(task);
 
   try {
-    const resp = await api.uploadStream(file);
-    if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part.trim();
-        if (!line.startsWith("data:")) continue;
-        try {
-          const evt = JSON.parse(line.slice(5).trim());
-          if (evt.type === "progress") {
-            task.percent = evt.percent ?? task.percent;
-            task.message = evt.message ?? task.message;
-          } else if (evt.type === "done") {
-            task.status = "done";
-            task.percent = 100;
-            task.message = `完成 · ${evt.chunk_count} 块 · ${formatChars(evt.total_chars)}`;
-            await loadFiles();
-          } else if (evt.type === "error") {
-            task.status = "error";
-            task.message = evt.message ?? "处理失败";
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-    }
+    await api.uploadWithProgress(file, {
+      onProgress: (percent, message) => {
+        task.percent = percent || task.percent;
+        task.message = message || task.message;
+      },
+      onDone: async ({ chunk_count, total_chars }) => {
+        task.status = "done";
+        task.percent = 100;
+        task.message = `完成 · ${chunk_count} 块 · ${formatChars(total_chars)}`;
+        await loadFiles();
+      },
+      onError: (msg) => {
+        task.status = "error";
+        task.message = msg || "处理失败";
+      },
+    });
     if (task.status === "uploading") {
       task.status = "done";
       task.percent = 100;
@@ -215,9 +196,9 @@ async function uploadFile(file: File) {
       await loadFiles();
     }
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } }; message?: string };
+    const err = e as { message?: string };
     task.status = "error";
-    task.message = err.response?.data?.detail ?? err.message ?? "上传失败";
+    task.message = err.message ?? "上传失败";
   }
 }
 
