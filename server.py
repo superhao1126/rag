@@ -11,7 +11,7 @@ import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Body
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -120,29 +120,126 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 @app.get("/api/files")
-async def list_files():
-    """列出知识库中所有已向量化的文件"""
+async def list_files(page: int = 1, page_size: int = 20, keyword: str = ""):
+    """列出知识库中已向量化的文件，支持分页与文件名模糊筛选"""
     rag = get_rag()
     if not rag._use_pg:
         raise HTTPException(400, "当前未启用 PostgreSQL 存储")
-    files = rag.vector_store.get_files()
-    return {"files": files}
+    if page < 1:
+        page = 1
+    # page_size 0 表示不分页，但限制最大 200 防止误用
+    if page_size > 200:
+        page_size = 200
+    if page_size < 0:
+        page_size = 0
+    return rag.vector_store.get_files(page=page, page_size=page_size, keyword=keyword)
 
 
 @app.delete("/api/files/{source:path}")
 async def delete_file(source: str):
-    """从知识库中删除指定文件"""
+    """从知识库中删除指定文件（按 source 路径，兼容旧用法）"""
     rag = get_rag()
     if not rag._use_pg:
         raise HTTPException(400, "当前未启用 PostgreSQL 存储")
     if not rag.vector_store.file_exists(source):
         raise HTTPException(404, f"文件不存在: {source}")
     rag.vector_store.delete_file(source)
-    # 重建 BM25 索引
     rag.bm25_index.fit(rag.vector_store.metadata)
     if rag.vector_store.metadata:
         rag.vector_store.save_bm25(rag.bm25_index.to_dict())
     return {"message": f"已删除文件: {source}"}
+
+
+@app.get("/api/files/by-id/{file_id}/info")
+async def get_file_info_by_id(file_id: str):
+    """按文件 ID 获取详细信息（聚合统计）"""
+    rag = get_rag()
+    if not rag._use_pg:
+        raise HTTPException(400, "当前未启用 PostgreSQL 存储")
+    source = rag.vector_store.get_source_by_id(file_id)
+    if not source:
+        raise HTTPException(404, f"文件 ID 不存在: {file_id}")
+    info = rag.vector_store.get_file_info(source)
+    if not info:
+        raise HTTPException(404, f"文件不存在: {source}")
+    return info
+
+
+@app.delete("/api/files/by-id/{file_id}")
+async def delete_file_by_id(file_id: str):
+    """按文件 ID 删除（推荐方式，避免 URL 编码 source 路径）"""
+    rag = get_rag()
+    if not rag._use_pg:
+        raise HTTPException(400, "当前未启用 PostgreSQL 存储")
+    source = rag.vector_store.get_source_by_id(file_id)
+    if not source:
+        raise HTTPException(404, f"文件 ID 不存在: {file_id}")
+    rag.vector_store.delete_file(source)
+    rag.bm25_index.fit(rag.vector_store.metadata)
+    if rag.vector_store.metadata:
+        rag.vector_store.save_bm25(rag.bm25_index.to_dict())
+    return {"id": file_id, "source": source, "message": f"已删除文件: {source}"}
+
+
+@app.post("/api/files/batch-delete")
+async def batch_delete_files(payload: dict = Body(...)):
+    """批量删除文件，支持按 ids 或 sources 调用。
+
+    Body: {"ids": ["abc123...", ...]} 或 {"sources": ["a.pdf", ...]}
+    返回: {"deleted": [{"id","source"}], "missing": [...], "total": N}
+    """
+    rag = get_rag()
+    if not rag._use_pg:
+        raise HTTPException(400, "当前未启用 PostgreSQL 存储")
+
+    raw_ids = payload.get("ids") or []
+    raw_sources = payload.get("sources") or []
+    if not isinstance(raw_ids, list) or not isinstance(raw_sources, list):
+        raise HTTPException(400, "ids 与 sources 必须为数组")
+    if not raw_ids and not raw_sources:
+        raise HTTPException(400, "ids 或 sources 至少提供一个非空数组")
+
+    targets: list[tuple[str, str]] = []  # (id, source)
+    missing: list[str] = []
+
+    for fid in raw_ids:
+        if not isinstance(fid, str) or not fid.strip():
+            continue
+        src = rag.vector_store.get_source_by_id(fid)
+        if src:
+            targets.append((fid, src))
+        else:
+            missing.append(fid)
+
+    for src in raw_sources:
+        if not isinstance(src, str) or not src.strip():
+            continue
+        if rag.vector_store.file_exists(src):
+            from core.pg_vectorstore import file_id_for
+            targets.append((file_id_for(src), src))
+        else:
+            missing.append(src)
+
+    # 去重
+    seen = set()
+    unique_targets = []
+    for fid, src in targets:
+        if src in seen:
+            continue
+        seen.add(src)
+        unique_targets.append((fid, src))
+
+    deleted = []
+    for fid, src in unique_targets:
+        rag.vector_store.delete_file(src)
+        deleted.append({"id": fid, "source": src})
+
+    if deleted:
+        rag.bm25_index.fit(rag.vector_store.metadata)
+        if rag.vector_store.metadata:
+            rag.vector_store.save_bm25(rag.bm25_index.to_dict())
+
+    return {"deleted": deleted, "missing": missing, "total": len(deleted)}
 
 
 # ============================================================
@@ -321,9 +418,17 @@ async def get_stats():
 
 
 @app.get("/api/chunks")
-async def get_chunks(source: str = Query(None)):
-    """获取分块可视化数据"""
+async def get_chunks(
+    source: str = Query(None),
+    file_id: str = Query(None, description="文件 ID（与 source 二选一，优先使用）"),
+):
+    """获取分块可视化数据，支持按 source 或 file_id 查询"""
     rag = get_rag()
+    if file_id and not source:
+        if rag._use_pg:
+            source = rag.vector_store.get_source_by_id(file_id)
+        if not source:
+            raise HTTPException(404, f"文件 ID 不存在: {file_id}")
     viz_data = rag.get_chunk_visualization(source)
 
     if not viz_data:
@@ -337,8 +442,8 @@ async def get_chunks(source: str = Query(None)):
 
 # ---- 保留旧接口别名，避免前端迁移期间 404 ----
 @app.get("/api/db/files")
-async def list_db_files_compat():
-    return await list_files()
+async def list_db_files_compat(page: int = 1, page_size: int = 20, keyword: str = ""):
+    return await list_files(page=page, page_size=page_size, keyword=keyword)
 
 
 # ============================================================

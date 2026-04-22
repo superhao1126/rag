@@ -9,9 +9,10 @@ import {
   CloseCircleFilled,
   LoadingOutlined,
   BarChartOutlined,
+  InfoCircleOutlined,
 } from "@ant-design/icons-vue";
 import api from "@/api";
-import type { KbFile } from "@/api";
+import type { KbFile, KbFileInfo } from "@/api";
 import { useToast } from "@/composables/useToast";
 import { useAppStore } from "@/stores/session";
 import ChunkModal from "@/components/ChunkModal.vue";
@@ -20,8 +21,28 @@ const toast = useToast();
 const store = useAppStore();
 const chunkModalRef = ref<InstanceType<typeof ChunkModal>>();
 
-function openChunkModal(source: string) {
-  chunkModalRef.value?.open(source);
+function openChunkModal(record: KbFile) {
+  chunkModalRef.value?.open({ source: record.source, fileId: record.id });
+}
+
+const infoVisible = ref(false);
+const infoLoading = ref(false);
+const infoData = ref<KbFileInfo | null>(null);
+
+async function openInfo(record: KbFile) {
+  infoVisible.value = true;
+  infoLoading.value = true;
+  infoData.value = null;
+  try {
+    const res = await api.getFileInfo(record.id);
+    infoData.value = res.data;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "获取文件详情失败";
+    toast.show(msg, "error");
+    infoVisible.value = false;
+  } finally {
+    infoLoading.value = false;
+  }
 }
 
 const highlightSource = ref<string | null>(store.highlightFile);
@@ -44,6 +65,14 @@ function isHighlighted(source: string) {
 const files = ref<KbFile[]>([]);
 const loading = ref(false);
 
+// 服务端分页状态
+const pagination = reactive({
+  current: 1,
+  pageSize: 20,
+  total: 0,
+});
+const keyword = ref("");
+
 interface UploadTask {
   id: string;
   filename: string;
@@ -58,8 +87,20 @@ const totalChunks = computed(() => files.value.reduce((s, f) => s + f.chunk_coun
 async function loadFiles() {
   loading.value = true;
   try {
-    const res = await api.getFiles();
+    const res = await api.getFiles({
+      page: pagination.current,
+      page_size: pagination.pageSize,
+      keyword: keyword.value.trim(),
+    });
     files.value = res.data.files;
+    pagination.total = res.data.total;
+    // 当前页超出总页数（删除最后一条后等情况），自动回到上一页
+    const maxPage = Math.max(1, Math.ceil(pagination.total / pagination.pageSize));
+    if (pagination.current > maxPage) {
+      pagination.current = maxPage;
+      await loadFiles();
+      return;
+    }
     store.setTotalChunks(totalChunks.value);
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } }; message?: string };
@@ -69,12 +110,32 @@ async function loadFiles() {
   }
 }
 
+function onTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.pageSize && p.pageSize !== pagination.pageSize) {
+    pagination.pageSize = p.pageSize;
+    pagination.current = 1;
+  } else if (p.current) {
+    pagination.current = p.current;
+  }
+  loadFiles();
+}
+
+let searchTimer: number | null = null;
+function onKeywordChange() {
+  if (searchTimer) window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => {
+    pagination.current = 1;
+    loadFiles();
+  }, 300);
+}
+
 function fileIcon(name: string) {
   const n = name.toLowerCase();
   if (n.endsWith(".pdf")) return "📕";
   if (n.endsWith(".md")) return "📘";
   if (n.endsWith(".docx")) return "📝";
   if (n.endsWith(".xlsx") || n.endsWith(".xls")) return "📊";
+  if (/\.(png|jpe?g|bmp|tiff?|webp)$/.test(n)) return "🖼️";
   return "📄";
 }
 
@@ -96,7 +157,8 @@ function formatChars(n: number | null): string {
 
 async function uploadFile(file: File) {
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-  if (!["txt", "md", "pdf", "docx", "xlsx", "xls"].includes(ext)) {
+  const ALLOWED = ["txt","md","pdf","docx","xlsx","xls","png","jpg","jpeg","bmp","tif","tiff","webp"];
+  if (!ALLOWED.includes(ext)) {
     toast.show(`不支持的格式: .${ext}`, "error");
     return;
   }
@@ -185,12 +247,54 @@ function confirmDelete(record: KbFile) {
     cancelText: "取消",
     async onOk() {
       try {
-        await api.deleteFile(record.source);
+        await api.deleteFileById(record.id);
         toast.show(`已删除 ${record.source}`, "success");
+        selectedRowKeys.value = selectedRowKeys.value.filter((k) => k !== record.id);
         await loadFiles();
       } catch (e: unknown) {
         const err = e as { response?: { data?: { detail?: string } }; message?: string };
         toast.show(err.response?.data?.detail ?? err.message ?? "删除失败", "error");
+      }
+    },
+  });
+}
+
+// ── 批量勾选删除（按 id） ──
+const selectedRowKeys = ref<string[]>([]);
+const rowSelection = computed(() => ({
+  selectedRowKeys: selectedRowKeys.value,
+  onChange: (keys: (string | number)[]) => {
+    selectedRowKeys.value = keys.map((k) => String(k));
+  },
+  preserveSelectedRowKeys: true,
+}));
+
+function clearSelection() {
+  selectedRowKeys.value = [];
+}
+
+async function batchDelete() {
+  const ids = [...selectedRowKeys.value];
+  if (!ids.length) return;
+  Modal.confirm({
+    title: `确认批量删除 ${ids.length} 个文件`,
+    content: `将删除选中的 ${ids.length} 个文件及其全部文本块，此操作不可撤销。`,
+    okText: "全部删除",
+    okType: "danger",
+    cancelText: "取消",
+    async onOk() {
+      try {
+        const res = await api.batchDeleteFiles({ ids });
+        const { deleted = [], missing = [] } = res.data;
+        toast.show(
+          `成功删除 ${deleted.length} 个${missing.length ? `，${missing.length} 个未找到` : ""}`,
+          deleted.length ? "success" : "error",
+        );
+        selectedRowKeys.value = [];
+        await loadFiles();
+      } catch (e: unknown) {
+        const err = e as { response?: { data?: { detail?: string } }; message?: string };
+        toast.show(err.response?.data?.detail ?? err.message ?? "批量删除失败", "error");
       }
     },
   });
@@ -207,7 +311,7 @@ const columns = [
   },
   { title: "总字符数", key: "total_chars", width: 120, align: "center" as const },
   { title: "上传时间", key: "uploaded_at", width: 180 },
-  { title: "操作", key: "action", width: 120, align: "center" as const },
+  { title: "操作", key: "action", width: 160, align: "center" as const },
 ];
 
 onMounted(async () => {
@@ -225,7 +329,7 @@ onMounted(async () => {
     <!-- 上传区 -->
     <a-card title="📤 上传文件">
       <a-upload-dragger
-        accept=".txt,.md,.pdf,.docx,.xlsx,.xls"
+        accept=".txt,.md,.pdf,.docx,.xlsx,.xls,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp"
         :multiple="true"
         :show-upload-list="false"
         :before-upload="beforeUpload"
@@ -237,7 +341,7 @@ onMounted(async () => {
         </p>
         <p class="ant-upload-text">点击或拖拽文件到此处上传</p>
         <p class="ant-upload-hint">
-          支持 .txt · .md · .pdf · .docx · .xlsx · .xls，文件将自动向量化入库
+          支持 .txt · .md · .pdf · .docx · .xlsx · .xls · 图片(jpg/png/bmp/tif/webp)，扫描件 PDF 与图片自动 OCR 识别
         </p>
       </a-upload-dragger>
 
@@ -299,6 +403,30 @@ onMounted(async () => {
         </a-tag>
       </template>
       <template #extra>
+        <a-input-search
+          v-model:value="keyword"
+          placeholder="搜索文件名"
+          allow-clear
+          style="width: 220px; margin-right: 8px"
+          @input="onKeywordChange"
+          @search="onKeywordChange"
+        />
+        <a-button
+          v-if="selectedRowKeys.length"
+          danger
+          style="margin-right: 8px"
+          @click="batchDelete"
+        >
+          <template #icon><DeleteOutlined /></template>
+          批量删除 ({{ selectedRowKeys.length }})
+        </a-button>
+        <a-button
+          v-if="selectedRowKeys.length"
+          style="margin-right: 8px"
+          @click="clearSelection"
+        >
+          清空选择
+        </a-button>
         <a-button :loading="loading" @click="loadFiles">
           <template #icon><ReloadOutlined /></template>
           刷新
@@ -309,12 +437,17 @@ onMounted(async () => {
         :columns="columns"
         :data-source="files"
         :loading="loading"
+        :row-selection="rowSelection"
         :pagination="{
-          pageSize: 20,
+          current: pagination.current,
+          pageSize: pagination.pageSize,
+          total: pagination.total,
           showSizeChanger: true,
+          pageSizeOptions: ['10', '20', '50', '100'],
           showTotal: (t: number) => `共 ${t} 条`,
         }"
-        row-key="source"
+        @change="onTableChange"
+        row-key="id"
         size="middle"
         :row-class-name="
           (record: KbFile) => (isHighlighted(record.source) ? 'highlighted-row' : '')
@@ -331,12 +464,22 @@ onMounted(async () => {
             {{ formatDate(record.uploaded_at) }}
           </template>
           <template v-else-if="column.key === 'action'">
+            <a-tooltip title="文件详情">
+              <a-button
+                type="text"
+                size="small"
+                style="color: #0ea5e9"
+                @click="openInfo(record)"
+              >
+                <template #icon><InfoCircleOutlined /></template>
+              </a-button>
+            </a-tooltip>
             <a-tooltip title="分块可视化">
               <a-button
                 type="text"
                 size="small"
                 style="color: #6366f1"
-                @click="openChunkModal(record.source)"
+                @click="openChunkModal(record)"
               >
                 <template #icon><BarChartOutlined /></template>
               </a-button>
@@ -356,6 +499,48 @@ onMounted(async () => {
     </a-card>
 
     <ChunkModal ref="chunkModalRef" />
+
+    <a-modal
+      v-model:open="infoVisible"
+      title="文件详情"
+      :footer="null"
+      width="560px"
+      destroy-on-close
+    >
+      <a-spin :spinning="infoLoading">
+        <a-descriptions
+          v-if="infoData"
+          :column="1"
+          bordered
+          size="small"
+          :label-style="{ width: '120px', background: 'var(--bg-secondary)' }"
+        >
+          <a-descriptions-item label="文件名">
+            <span style="word-break: break-all">{{ infoData.source }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="文件 ID">
+            <code>{{ infoData.id }}</code>
+          </a-descriptions-item>
+          <a-descriptions-item label="文本块数">{{ infoData.chunk_count }}</a-descriptions-item>
+          <a-descriptions-item label="总字符数">
+            {{ formatChars(infoData.total_chars) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="块字符长度">
+            最小 {{ infoData.min_chars }} / 最大 {{ infoData.max_chars }} / 平均
+            {{ infoData.avg_chars }}
+          </a-descriptions-item>
+          <a-descriptions-item label="块索引范围">
+            {{ infoData.chunk_index_range[0] }} ~ {{ infoData.chunk_index_range[1] }}
+          </a-descriptions-item>
+          <a-descriptions-item label="首次上传">
+            {{ formatDate(infoData.uploaded_at) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="最近更新">
+            {{ formatDate(infoData.last_updated_at) }}
+          </a-descriptions-item>
+        </a-descriptions>
+      </a-spin>
+    </a-modal>
   </div>
 </template>
 

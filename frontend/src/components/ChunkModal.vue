@@ -26,20 +26,31 @@ interface ChunkSource {
   stats: Record<string, number>;
 }
 
-function open(source?: string) {
+function open(arg?: string | { source?: string; fileId?: string }) {
+  let source: string | undefined;
+  let fileId: string | undefined;
+  if (typeof arg === "string") {
+    source = arg;
+  } else if (arg) {
+    source = arg.source;
+    fileId = arg.fileId;
+  }
   singleSource.value = source ?? null;
   visible.value = true;
-  loadChunks(source);
+  loadChunks({ source, fileId });
 }
 
-async function loadChunks(source?: string) {
+async function loadChunks(opts: { source?: string; fileId?: string } = {}) {
   loading.value = true;
   try {
-    const res = await api.getChunks(source);
+    const params: { source?: string; file_id?: string } = {};
+    if (opts.source) params.source = opts.source;
+    if (opts.fileId) params.file_id = opts.fileId;
+    const res = await api.getChunks(Object.keys(params).length ? params : undefined);
     const data = res.data as Record<string, unknown>;
 
     if (data["chunks"] && data["stats"]) {
-      const label = source ?? "所有来源";
+      const label = opts.source ?? "所有来源";
       chunkData.value = { [label]: data as unknown as ChunkSource };
     } else {
       chunkData.value = data as Record<string, ChunkSource>;

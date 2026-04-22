@@ -50,6 +50,12 @@ class Config:
             "password": self.PG_PASSWORD,
         }
 
+    # ---- OCR（扫描件 PDF / 图片识别）----
+    OCR_ENABLED = True              # 是否启用 PaddleOCR（依赖未安装时自动跳过）
+    OCR_LANG = "ch"                 # 识别语言：ch / en / japan / korean ...
+    OCR_CONF_THRESHOLD = 0.6        # 置信度过滤阈值，低于此值的识别行将被丢弃
+    OCR_PDF_RENDER_ZOOM = 2.0       # 扫描件 PDF 栅格化倍率（值越大越清晰但越慢）
+
     # ---- 交互 ----
     STREAM = True          # 是否启用流式输出
     HISTORY_TURNS = 5      # 对话历史保留轮数（0 = 不记忆）

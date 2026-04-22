@@ -7,8 +7,12 @@ PDF 读取策略（按优先级）：
 Word 读取使用 python-docx；Excel 读取使用 openpyxl（.xlsx）/ xlrd（.xls）。
 """
 
+import json
+import time
 import warnings
 from pathlib import Path
+
+from core.ocr import OCRReader
 
 # 尝试导入 PyMuPDF（安装名：pymupdf，导入名：fitz）
 try:
@@ -16,6 +20,53 @@ try:
     _HAS_FITZ = True
 except ImportError:
     _HAS_FITZ = False
+
+try:
+    import numpy as _np  # type: ignore
+    _HAS_NP = True
+except ImportError:
+    _HAS_NP = False
+
+try:
+    import cv2 as _cv2  # type: ignore
+    _HAS_CV2 = True
+except ImportError:
+    _HAS_CV2 = False
+
+# 触发 OCR 回退的最小有效文本字符数（若文本层提取结果短于此值，视为扫描件）
+_PDF_OCR_FALLBACK_MIN_CHARS = 20
+
+
+def _dump_ocr_output(source_path: Path, kind: str, pages: list[dict], full_text: str) -> None:
+    """将 OCR 识别结果落盘为 JSON 文件，方便核查与回放。
+
+    输出目录：项目根目录下的 output/ocr/，文件名带时间戳，避免覆盖。
+    """
+    try:
+        out_dir = Path(__file__).resolve().parent.parent / "output" / "ocr"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        safe_stem = "".join(c if c.isalnum() or c in "._-" else "_" for c in source_path.stem)
+        out_path = out_dir / f"{ts}_{safe_stem}.ocr.json"
+        payload = {
+            "source": str(source_path),
+            "filename": source_path.name,
+            "kind": kind,                   # "image" | "scanned_pdf"
+            "timestamp": ts,
+            "page_count": len(pages),
+            "char_count": len(full_text),
+            "pages": pages,                 # [{page, text}]
+            "text": full_text,
+        }
+        out_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        # 同步打印到控制台，便于实时核查
+        print(f"\n===== [OCR] {kind} | {source_path.name} → {out_path} =====")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(f"===== [OCR] end ({len(full_text)} chars) =====\n", flush=True)
+    except Exception as e:
+        warnings.warn(f"OCR 结果落盘失败: {e}", UserWarning)
 
 import PyPDF2
 
@@ -41,11 +92,14 @@ except ImportError:
 class FileReader:
     """从本地文件提取纯文本"""
 
-    SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls"}
+    SUPPORTED_EXTENSIONS = {
+        ".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls",
+        ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp",
+    }
 
     @staticmethod
     def read(file_path: str) -> str:
-        """读取文件并返回纯文本"""
+        """读取文件并返回纯文本（自动区分文本类 / 图片类 / 扫描件 PDF）"""
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -59,6 +113,8 @@ class FileReader:
             return FileReader._read_docx(path)
         elif suffix in (".xlsx", ".xls"):
             return FileReader._read_excel(path)
+        elif suffix in OCRReader.IMAGE_EXTENSIONS:
+            return FileReader._read_image(path)
         else:
             raise ValueError(
                 f"不支持的文件格式: {suffix}，仅支持 {FileReader.SUPPORTED_EXTENSIONS}"
@@ -76,25 +132,84 @@ class FileReader:
 
     @staticmethod
     def _read_pdf(path: Path) -> str:
+        text = ""
         if _HAS_FITZ:
             text = FileReader._read_pdf_fitz(path)
-            if text.strip():
+            if len(text.strip()) >= _PDF_OCR_FALLBACK_MIN_CHARS:
                 return text
-            # fitz 没提取到内容，回退到 PyPDF2 再试
-            warnings.warn(f"PyMuPDF 提取为空，尝试 PyPDF2: {path.name}")
+            warnings.warn(f"PyMuPDF 未提取到有效文本，尝试 PyPDF2: {path.name}")
 
-        text = FileReader._read_pdf_pypdf2(path)
-        if text.strip():
-            return text
+        text2 = FileReader._read_pdf_pypdf2(path)
+        if len(text2.strip()) >= _PDF_OCR_FALLBACK_MIN_CHARS:
+            return text2
 
-        # 两者均无法提取 —— 很可能是扫描版 PDF（图片化）
+        # 文本层为空 → 视为扫描件 PDF，按页栅格化后 OCR
+        if OCRReader.is_available() and _HAS_FITZ:
+            warnings.warn(
+                f"PDF 文本层为空（疑似扫描件），自动调用 OCR: {path.name}",
+                UserWarning,
+            )
+            return FileReader._ocr_pdf(path)
+
         warnings.warn(
-            f"PDF 文本提取失败（可能是扫描版/图片 PDF）：{path.name}。"
-            "如需处理扫描版，请安装 OCR 工具（如 tesseract + pytesseract）。",
+            f"PDF 文本提取失败（疑似扫描件）：{path.name}。"
+            "请安装 OCR 依赖：pip install paddleocr paddlepaddle opencv-python",
             UserWarning,
             stacklevel=2,
         )
-        return ""
+        return text or text2
+
+    @staticmethod
+    def _ocr_pdf(path: Path) -> str:
+        """对扫描版 PDF 逐页栅格化并执行 OCR"""
+        if not (_HAS_FITZ and _HAS_NP and _HAS_CV2):
+            return ""
+        doc = _fitz.open(str(path))
+        parts: list[str] = []
+        page_records: list[dict] = []
+        # 配置驱动的栅格化倍率
+        try:
+            from core.config import Config
+            zoom_v = float(getattr(Config, "OCR_PDF_RENDER_ZOOM", 2.0))
+        except Exception:
+            zoom_v = 2.0
+        zoom = _fitz.Matrix(zoom_v, zoom_v)
+        for i, page in enumerate(doc):
+            try:
+                pix = page.get_pixmap(matrix=zoom, alpha=False)
+                arr = _np.frombuffer(pix.samples, dtype=_np.uint8).reshape(
+                    pix.height, pix.width, pix.n
+                )
+                if pix.n == 4:
+                    img_bgr = _cv2.cvtColor(arr, _cv2.COLOR_RGBA2BGR)
+                elif pix.n == 3:
+                    img_bgr = _cv2.cvtColor(arr, _cv2.COLOR_RGB2BGR)
+                else:
+                    img_bgr = _cv2.cvtColor(arr, _cv2.COLOR_GRAY2BGR)
+                page_text = OCRReader.recognize_array(img_bgr)
+                page_records.append({"page": i + 1, "text": page_text})
+                if page_text.strip():
+                    parts.append(f"# 第 {i + 1} 页\n{page_text.strip()}")
+            except Exception as e:
+                warnings.warn(f"OCR 第 {i + 1} 页失败: {e}")
+                page_records.append({"page": i + 1, "text": "", "error": str(e)})
+        doc.close()
+        full_text = "\n\n".join(parts)
+        _dump_ocr_output(path, "scanned_pdf", page_records, full_text)
+        return full_text
+
+    @staticmethod
+    def _read_image(path: Path) -> str:
+        """图片文件 → OCR 提取文字"""
+        if not OCRReader.is_available():
+            raise RuntimeError(
+                "OCR 不可用，无法解析图片。请安装：pip install paddleocr paddlepaddle opencv-python"
+            )
+        text = OCRReader.read_image_file(path)
+        if not text.strip():
+            warnings.warn(f"图片 OCR 未识别到任何高置信度文本: {path.name}", UserWarning)
+        _dump_ocr_output(path, "image", [{"page": 1, "text": text}], text)
+        return text
 
     @staticmethod
     def _read_pdf_fitz(path: Path) -> str:

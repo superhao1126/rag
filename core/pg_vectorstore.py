@@ -3,6 +3,7 @@ PostgreSQL + pgvector 向量存储（全局，无会话隔离）
 所有文件共享同一向量库，支持对话历史持久化。
 """
 
+import hashlib
 import time
 import uuid
 import numpy as np
@@ -19,6 +20,11 @@ except ImportError:
     HAS_PG = False
 
 _GLOBAL_KEY = "global"
+
+
+def file_id_for(source: str) -> str:
+    """根据 source 生成稳定的文件 ID（MD5 前 16 位，足够避免冲突且简短）"""
+    return hashlib.md5(source.encode("utf-8")).hexdigest()[:16]
 
 
 class PgVectorStore:
@@ -311,22 +317,64 @@ class PgVectorStore:
             "已加载来源": sources,
         }
 
-    def get_files(self) -> List[Dict]:
-        """获取全库所有文件信息（按来源聚合）"""
+    def get_files(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        keyword: str = "",
+    ) -> Dict:
+        """获取知识库已入库文件列表（按来源聚合，分页）。
+
+        参数:
+            page: 第几页（1 起步）
+            page_size: 每页条数；传 0 或负数表示返回全部
+            keyword: 文件名模糊筛选（不区分大小写，可为空）
+
+        返回:
+            {
+                files: [...],
+                total: 总文件数,
+                page: 当前页,
+                page_size: 每页大小（0 表示全部）,
+            }
+        """
+        page = max(1, int(page or 1))
+        page_size = max(0, int(page_size or 0))
+        kw = (keyword or "").strip()
+
+        where_sql = ""
+        params: List = []
+        if kw:
+            where_sql = "WHERE source ILIKE %s"
+            params.append(f"%{kw}%")
+
         with self.conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                f"SELECT COUNT(DISTINCT source) FROM rag_chunks {where_sql}",
+                params,
+            )
+            total = int(cur.fetchone()[0] or 0)
+
+            sql = f"""
                 SELECT source,
                        COUNT(*) AS chunk_count,
                        SUM(char_count) AS total_chars,
                        MIN(created_at) AS uploaded_at
                 FROM rag_chunks
+                {where_sql}
                 GROUP BY source
                 ORDER BY uploaded_at DESC
-            """)
+            """
+            limit_params: List = list(params)
+            if page_size > 0:
+                sql += " LIMIT %s OFFSET %s"
+                limit_params.extend([page_size, (page - 1) * page_size])
+            cur.execute(sql, limit_params)
             rows = cur.fetchall()
 
-        return [
+        files = [
             {
+                "id": file_id_for(r[0]),
                 "source": r[0],
                 "chunk_count": r[1],
                 "total_chars": int(r[2]) if r[2] else 0,
@@ -334,11 +382,74 @@ class PgVectorStore:
             }
             for r in rows
         ]
+        return {
+            "files": files,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+    def get_source_by_id(self, file_id: str) -> Optional[str]:
+        """根据文件 ID 反查 source（遍历所有 source 计算 hash 比对）。
+
+        当文件量极大时可以缓存到内存，但通常 source 数量在数千以内，
+        每次 SELECT DISTINCT 性能足够。
+        """
+        if not file_id:
+            return None
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT source FROM rag_chunks")
+            rows = cur.fetchall()
+        for (src,) in rows:
+            if file_id_for(src) == file_id:
+                return src
+        return None
 
     def file_exists(self, source: str) -> bool:
         with self.conn.cursor() as cur:
             cur.execute("SELECT 1 FROM rag_chunks WHERE source = %s LIMIT 1", (source,))
             return cur.fetchone() is not None
+
+    def get_file_info(self, source: str) -> Optional[Dict]:
+        """获取单个文件的详细信息（聚合 + 块字符长度统计）"""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT source,
+                       COUNT(*)              AS chunk_count,
+                       SUM(char_count)       AS total_chars,
+                       MIN(char_count)       AS min_chars,
+                       MAX(char_count)       AS max_chars,
+                       AVG(char_count)       AS avg_chars,
+                       MIN(created_at)       AS uploaded_at,
+                       MAX(created_at)       AS last_updated_at,
+                       MIN(chunk_index)      AS first_chunk_index,
+                       MAX(chunk_index)      AS last_chunk_index
+                FROM rag_chunks
+                WHERE source = %s
+                GROUP BY source
+                """,
+                (source,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+
+        return {
+            "id": file_id_for(row[0]),
+            "source": row[0],
+            "chunk_count": int(row[1] or 0),
+            "total_chars": int(row[2] or 0),
+            "min_chars": int(row[3] or 0),
+            "max_chars": int(row[4] or 0),
+            "avg_chars": round(float(row[5] or 0), 1),
+            "uploaded_at": row[6].isoformat() if row[6] else None,
+            "last_updated_at": row[7].isoformat() if row[7] else None,
+            "chunk_index_range": [
+                int(row[8] or 0),
+                int(row[9] or 0),
+            ],
+        }
 
     def delete_file(self, source: str):
         """从库中删除指定来源的所有块"""

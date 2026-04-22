@@ -644,7 +644,9 @@ function formatTime(iso: string | null): string {
           <span>对话列表</span>
         </div>
         <a-button type="primary" size="small" class="new-btn" @click="newConversation">
-          <template #icon><PlusOutlined /></template>
+          <template #icon>
+            <PlusOutlined />
+          </template>
           新建
         </a-button>
       </div>
@@ -663,12 +665,9 @@ function formatTime(iso: string | null): string {
       <!-- 对话列表 -->
       <div class="conv-list">
         <a-spin :spinning="loadingConvs" size="small">
-          <div
-            v-for="conv in store.conversations"
-            :key="conv.id"
+          <div v-for="conv in store.conversations" :key="conv.id"
             :class="['conv-item', { active: conv.id === store.activeConversationId }]"
-            @click="selectConversation(conv.id)"
-          >
+            @click="selectConversation(conv.id)">
             <div class="conv-icon">💬</div>
             <div class="conv-info">
               <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
@@ -676,14 +675,10 @@ function formatTime(iso: string | null): string {
                 {{ conv.message_count }} 条 · {{ formatTime(conv.updated_at) }}
               </div>
             </div>
-            <a-button
-              class="conv-delete"
-              type="text"
-              size="small"
-              danger
-              @click.stop="deleteConversation(conv)"
-            >
-              <template #icon><DeleteOutlined /></template>
+            <a-button class="conv-delete" type="text" size="small" danger @click.stop="deleteConversation(conv)">
+              <template #icon>
+                <DeleteOutlined />
+              </template>
             </a-button>
           </div>
           <div v-if="!loadingConvs && store.conversations.length === 0" class="conv-empty">
@@ -697,21 +692,15 @@ function formatTime(iso: string | null): string {
     <!-- ── 右侧：聊天面板 ── -->
     <a-layout class="chat-panel">
       <!-- 消息区域 -->
-      <div
-        ref="messagesEl"
-        class="messages"
-        @click="handleMessagesClick"
-        @mouseover="handleMessagesMouseOver"
-        @mouseout="handleMessagesMouseOut"
-        @scroll.passive="onMessagesScroll"
-      >
+      <div ref="messagesEl" class="messages" @click="handleMessagesClick" @mouseover="handleMessagesMouseOver"
+        @mouseout="handleMessagesMouseOut" @scroll.passive="onMessagesScroll">
         <!-- 欢迎页 -->
         <div v-if="!store.activeConversationId" class="welcome">
           <div class="welcome-emoji">🤖</div>
           <h2>RAG 知识问答助手</h2>
           <p>上传文档后，在左侧新建对话，<br />即可开始提问</p>
           <div class="welcome-tips">
-            <div class="tip-item">📄 支持 PDF、TXT、Markdown</div>
+            <div class="tip-item">📄 支持 PDF、TXT、Markdown、Word、图片</div>
             <div class="tip-item">🔍 混合检索，精准定位</div>
             <div class="tip-item">💬 多轮对话，上下文记忆</div>
           </div>
@@ -734,11 +723,8 @@ function formatTime(iso: string | null): string {
         <template v-else>
           <template v-for="(msg, idx) in messages" :key="idx">
             <!-- 检索来源折叠面板 -->
-            <a-collapse
-              v-if="msg.role === 'assistant' && msg.retrieval && msg.retrieval.length"
-              ghost
-              class="retrieval-collapse"
-            >
+            <a-collapse v-if="msg.role === 'assistant' && msg.retrieval && msg.retrieval.length" ghost
+              class="retrieval-collapse">
               <a-collapse-panel key="1">
                 <template #header>
                   <span class="retrieval-summary">
@@ -751,11 +737,7 @@ function formatTime(iso: string | null): string {
                 <div class="retrieval-list">
                   <div v-for="(r, ri) in msg.retrieval" :key="ri" class="retrieval-item">
                     <span class="retrieval-idx">{{ ri + 1 }}</span>
-                    <button
-                      class="retrieval-source"
-                      @click="goToSource(r.source)"
-                      :title="'跳转到：' + r.source"
-                    >
+                    <button class="retrieval-source" @click="goToSource(r.source)" :title="'跳转到：' + r.source">
                       {{ r.source }}
                     </button>
                     <span class="retrieval-score">{{ getScoreStr(r) }}</span>
@@ -776,99 +758,51 @@ function formatTime(iso: string | null): string {
               <div class="ai-content" :class="{ 'msg-highlight': highlightMsgIdx === idx }">
                 <!-- 深度思考过程（可折叠） -->
                 <div v-if="msg.thinking" class="thinking-block" :class="{ streaming: msg.streaming && !msg.content }">
-                  <button
-                    class="thinking-header"
-                    @click="msg.thinkingExpanded = !msg.thinkingExpanded"
-                    type="button"
-                  >
+                  <button class="thinking-header" @click="msg.thinkingExpanded = !msg.thinkingExpanded" type="button">
                     <span class="thinking-header-icon">💭</span>
                     <span class="thinking-header-text">
                       {{ msg.streaming && !msg.content ? "深度思考中…" : "已深度思考" }}
                     </span>
                     <span class="thinking-header-chevron" :class="{ open: msg.thinkingExpanded }">▾</span>
                   </button>
-                  <div
-                    v-show="msg.thinkingExpanded"
-                    class="thinking-body"
-                    v-html="msg.thinkingHtml"
-                  ></div>
+                  <div v-show="msg.thinkingExpanded" class="thinking-body" v-html="msg.thinkingHtml"></div>
                 </div>
-                <div
-                  v-if="msg.content || !msg.thinking"
-                  class="bubble ai-bubble"
-                  :class="{ streaming: msg.streaming }"
-                  v-html="msg.htmlContent || '<span class=\'typing-cursor\'></span>'"
-                ></div>
+                <div v-if="msg.content || !msg.thinking" class="bubble ai-bubble" :class="{ streaming: msg.streaming }"
+                  v-html="msg.htmlContent || '<span class=\'typing-cursor\'></span>'"></div>
                 <!-- 反馈工具栏 -->
-                <div
-                  v-if="!msg.streaming && msg.content"
-                  class="msg-actions"
-                >
-                  <button
-                    class="msg-action-btn"
-                    :disabled="isStreaming"
-                    @click="regenerateMessage(idx)"
-                    title="重新生成"
-                  >
+                <div v-if="!msg.streaming && msg.content" class="msg-actions">
+                  <button class="msg-action-btn" :disabled="isStreaming" @click="regenerateMessage(idx)" title="重新生成">
                     <span class="ic">↻</span>
                     <span>重新生成</span>
                   </button>
-                  <button
-                    class="msg-action-btn"
-                    :class="{ active: msg.feedback === 1 }"
-                    :disabled="!msg.id || msg.feedbackPending"
-                    @click="toggleThumbUp(idx)"
-                    title="对该回答满意"
-                  >
+                  <button class="msg-action-btn" :class="{ active: msg.feedback === 1 }"
+                    :disabled="!msg.id || msg.feedbackPending" @click="toggleThumbUp(idx)" title="对该回答满意">
                     <span class="ic">👍</span>
                   </button>
-                  <a-popover
-                    trigger="click"
-                    placement="bottomLeft"
-                    :open="!!dislikePopoverOpen[idx]"
-                    @update:open="(v: boolean) => (dislikePopoverOpen[idx] = v)"
-                    overlay-class-name="dislike-popover"
-                  >
+                  <a-popover trigger="click" placement="bottomLeft" :open="!!dislikePopoverOpen[idx]"
+                    @update:open="(v: boolean) => (dislikePopoverOpen[idx] = v)" overlay-class-name="dislike-popover">
                     <template #content>
                       <div class="dislike-form">
                         <div class="dislike-title">告诉我们哪里需要改进</div>
                         <div class="dislike-reasons">
-                          <a-checkable-tag
-                            v-for="r in FEEDBACK_REASONS"
-                            :key="r"
-                            :checked="dislikeDraft.reasons.includes(r)"
-                            @change="(checked: boolean) => {
+                          <a-checkable-tag v-for="r in FEEDBACK_REASONS" :key="r"
+                            :checked="dislikeDraft.reasons.includes(r)" @change="(checked: boolean) => {
                               if (checked) dislikeDraft.reasons.push(r);
                               else dislikeDraft.reasons = dislikeDraft.reasons.filter(x => x !== r);
-                            }"
-                          >{{ r }}</a-checkable-tag>
+                            }">{{ r }}</a-checkable-tag>
                         </div>
-                        <a-textarea
-                          v-model:value="dislikeDraft.comment"
-                          placeholder="可补充说明（可选，最多 500 字）"
-                          :auto-size="{ minRows: 2, maxRows: 4 }"
-                          :maxlength="500"
-                          show-count
-                          class="dislike-comment"
-                        />
+                        <a-textarea v-model:value="dislikeDraft.comment" placeholder="可补充说明（可选，最多 500 字）"
+                          :auto-size="{ minRows: 2, maxRows: 4 }" :maxlength="500" show-count class="dislike-comment" />
                         <div class="dislike-actions">
                           <a-button size="small" @click="cancelDislike(idx)">取消</a-button>
-                          <a-button
-                            size="small"
-                            type="primary"
-                            :loading="msg.feedbackPending"
-                            @click="submitDislike(idx)"
-                          >提交</a-button>
+                          <a-button size="small" type="primary" :loading="msg.feedbackPending"
+                            @click="submitDislike(idx)">提交</a-button>
                         </div>
                       </div>
                     </template>
-                    <button
-                      class="msg-action-btn"
-                      :class="{ active: msg.feedback === -1 }"
-                      :disabled="!msg.id || msg.feedbackPending"
-                      @click="openDislikePopover(idx)"
-                      :title="msg.feedback === -1 ? '取消踩' : '对该回答不满意'"
-                    >
+                    <button class="msg-action-btn" :class="{ active: msg.feedback === -1 }"
+                      :disabled="!msg.id || msg.feedbackPending" @click="openDislikePopover(idx)"
+                      :title="msg.feedback === -1 ? '取消踩' : '对该回答不满意'">
                       <span class="ic">👎</span>
                     </button>
                   </a-popover>
@@ -879,13 +813,9 @@ function formatTime(iso: string | null): string {
         </template>
 
         <!-- 内联引用悬浮预览 -->
-        <div
-          v-show="inlineCite.visible"
-          class="inline-cite-pop"
-          :style="{ top: inlineCite.top + 'px', left: inlineCite.left + 'px' }"
-          @mouseenter="inlineCite.visible = true"
-          @mouseleave="inlineCite.visible = false"
-        >
+        <div v-show="inlineCite.visible" class="inline-cite-pop"
+          :style="{ top: inlineCite.top + 'px', left: inlineCite.left + 'px' }" @mouseenter="inlineCite.visible = true"
+          @mouseleave="inlineCite.visible = false">
           <div class="inline-cite-head">
             <span class="inline-cite-idx">{{ inlineCite.idx }}</span>
             <span class="inline-cite-source">📄 {{ inlineCite.source }}</span>
@@ -896,12 +826,7 @@ function formatTime(iso: string | null): string {
 
         <!-- 回到底部按钮 -->
         <transition name="fade-up">
-          <button
-            v-show="showScrollBtn"
-            class="scroll-bottom-btn"
-            @click="scrollToBottomSmooth"
-            title="回到最新消息"
-          >
+          <button v-show="showScrollBtn" class="scroll-bottom-btn" @click="scrollToBottomSmooth" title="回到最新消息">
             <span class="arrow">↓</span>
           </button>
         </transition>
@@ -910,36 +835,21 @@ function formatTime(iso: string | null): string {
       <!-- 输入区域 -->
       <div class="input-area">
         <div class="input-card">
-          <a-textarea
-            ref="inputEl"
-            v-model:value="questionText"
-            placeholder="输入问题…  Enter 发送，Shift+Enter 换行"
-            :auto-size="{ minRows: 1, maxRows: 6 }"
-            :disabled="isStreaming || !store.activeConversationId"
-            class="question-input"
-            @keydown="handleKeyDown"
-          />
+          <a-textarea ref="inputEl" v-model:value="questionText" placeholder="输入问题…  Enter 发送，Shift+Enter 换行"
+            :auto-size="{ minRows: 1, maxRows: 6 }" :disabled="isStreaming || !store.activeConversationId"
+            class="question-input" @keydown="handleKeyDown" />
           <div class="input-footer">
             <div class="mode-picker">
               <span class="mode-label">检索模式</span>
-              <a-segmented
-                v-model:value="searchMode"
-                size="small"
-                :options="[
-                  { label: '混合', value: 'hybrid' },
-                  { label: '向量', value: 'vector' },
-                  { label: 'BM25', value: 'bm25' },
-                ]"
-              />
+              <a-segmented v-model:value="searchMode" size="small" :options="[
+                { label: '混合', value: 'hybrid' },
+                { label: '向量', value: 'vector' },
+                { label: 'BM25', value: 'bm25' },
+              ]" />
             </div>
             <a-tooltip :title="enableThinking ? '已开启深度思考（响应较慢，但更严谨）' : '开启后模型会先输出推理过程'">
-              <button
-                class="thinking-toggle"
-                :class="{ active: enableThinking }"
-                :disabled="isStreaming"
-                @click="enableThinking = !enableThinking"
-                type="button"
-              >
+              <button class="thinking-toggle" :class="{ active: enableThinking }" :disabled="isStreaming"
+                @click="enableThinking = !enableThinking" type="button">
                 <span class="thinking-icon">💭</span>
                 <span>深度思考</span>
               </button>
@@ -947,14 +857,11 @@ function formatTime(iso: string | null): string {
             <a-button v-if="isStreaming" class="stop-btn" @click="stopGeneration">
               ⏹ 停止
             </a-button>
-            <a-button
-              v-else
-              type="primary"
-              :disabled="!questionText.trim() || !store.activeConversationId"
-              class="send-btn"
-              @click="sendQuestion"
-            >
-              <template #icon><SendOutlined /></template>
+            <a-button v-else type="primary" :disabled="!questionText.trim() || !store.activeConversationId"
+              class="send-btn" @click="sendQuestion">
+              <template #icon>
+                <SendOutlined />
+              </template>
               发送
             </a-button>
           </div>
@@ -1041,6 +948,7 @@ function formatTime(iso: string | null): string {
   background: #22c55e;
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
 }
+
 .kb-dot.inactive {
   background: var(--text-muted);
 }
@@ -1066,6 +974,7 @@ function formatTime(iso: string | null): string {
 .conv-list::-webkit-scrollbar {
   width: 4px;
 }
+
 .conv-list::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.08);
   border-radius: 4px;
@@ -1146,6 +1055,7 @@ function formatTime(iso: string | null): string {
   margin-bottom: 8px;
   opacity: 0.4;
 }
+
 .conv-empty div {
   font-size: 12px;
 }
@@ -1172,6 +1082,7 @@ function formatTime(iso: string | null): string {
 .messages::-webkit-scrollbar {
   width: 5px;
 }
+
 .messages::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.07);
   border-radius: 4px;
@@ -1199,6 +1110,7 @@ function formatTime(iso: string | null): string {
   z-index: 5;
   flex-shrink: 0;
 }
+
 .scroll-bottom-btn:hover {
   background: var(--primary);
   color: #fff;
@@ -1206,15 +1118,18 @@ function formatTime(iso: string | null): string {
   transform: translateY(-2px);
   box-shadow: 0 10px 24px rgba(99, 102, 241, 0.35);
 }
+
 .scroll-bottom-btn .arrow {
   font-size: 18px;
   font-weight: 700;
   line-height: 1;
 }
+
 .fade-up-enter-active,
 .fade-up-leave-active {
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
+
 .fade-up-enter-from,
 .fade-up-leave-to {
   opacity: 0;
@@ -1281,6 +1196,7 @@ function formatTime(iso: string | null): string {
     opacity: 0;
     transform: translateY(6px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -1460,6 +1376,7 @@ function formatTime(iso: string | null): string {
     opacity: 0;
     transform: translate(-50%, calc(-100% + 6px));
   }
+
   to {
     opacity: 1;
     transform: translate(-50%, -100%);
@@ -1486,10 +1403,12 @@ function formatTime(iso: string | null): string {
     opacity: 0.25;
     transform: scaleY(0.85);
   }
+
   50% {
     opacity: 1;
     transform: scaleY(1);
   }
+
   100% {
     opacity: 0.25;
     transform: scaleY(0.85);
@@ -1504,12 +1423,15 @@ function formatTime(iso: string | null): string {
   margin: 14px 0 6px;
   color: var(--text-primary);
 }
+
 .ai-bubble :deep(h1) {
   font-size: 1.2em;
 }
+
 .ai-bubble :deep(h2) {
   font-size: 1.1em;
 }
+
 .ai-bubble :deep(h3) {
   font-size: 1em;
 }
@@ -1517,9 +1439,11 @@ function formatTime(iso: string | null): string {
 .ai-bubble :deep(p) {
   margin: 6px 0;
 }
+
 .ai-bubble :deep(> p:first-child) {
   margin-top: 0;
 }
+
 .ai-bubble :deep(> p:last-child) {
   margin-bottom: 0;
 }
@@ -1529,6 +1453,7 @@ function formatTime(iso: string | null): string {
   margin: 6px 0;
   padding-left: 20px;
 }
+
 .ai-bubble :deep(li) {
   margin: 3px 0;
 }
@@ -1648,13 +1573,16 @@ function formatTime(iso: string | null): string {
   font-weight: 700;
   color: var(--text-primary);
 }
+
 .ai-bubble :deep(a) {
   color: #818cf8;
   text-decoration: none;
 }
+
 .ai-bubble :deep(a:hover) {
   text-decoration: underline;
 }
+
 .ai-bubble :deep(hr) {
   border: none;
   border-top: 1px solid var(--border);
@@ -1750,6 +1678,7 @@ function formatTime(iso: string | null): string {
   text-underline-offset: 2px;
   transition: color 0.15s;
 }
+
 .retrieval-source:hover {
   color: #a5b4fc;
 }
@@ -1823,16 +1752,20 @@ function formatTime(iso: string | null): string {
   background: rgba(255, 255, 255, 0.06) !important;
   border-radius: 8px !important;
 }
+
 .mode-picker :deep(.ant-segmented-item-label) {
   color: var(--text-muted) !important;
   font-size: 12px !important;
 }
+
 .mode-picker :deep(.ant-segmented-item-selected .ant-segmented-item-label) {
   color: #a5b4fc !important;
 }
+
 .mode-picker :deep(.ant-segmented-item-selected) {
   background: rgba(99, 102, 241, 0.25) !important;
 }
+
 .mode-picker :deep(.ant-segmented-thumb) {
   background: rgba(99, 102, 241, 0.25) !important;
 }
@@ -1841,6 +1774,7 @@ function formatTime(iso: string | null): string {
 .ai-content.msg-highlight {
   position: relative;
 }
+
 .ai-content.msg-highlight::before {
   content: "";
   position: absolute;
@@ -1852,14 +1786,24 @@ function formatTime(iso: string | null): string {
   animation: msgHighlightPulse 1.4s ease-out 2;
   z-index: 0;
 }
-.ai-content.msg-highlight > * {
+
+.ai-content.msg-highlight>* {
   position: relative;
   z-index: 1;
 }
+
 @keyframes msgHighlightPulse {
-  0% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
-  70% { box-shadow: 0 0 0 12px rgba(139, 92, 246, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0); }
+  0% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4);
+  }
+
+  70% {
+    box-shadow: 0 0 0 12px rgba(139, 92, 246, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+  }
 }
 
 /* 反馈工具栏（重新生成 / 👍 / 👎） */
@@ -1871,9 +1815,11 @@ function formatTime(iso: string | null): string {
   opacity: 0.65;
   transition: opacity 0.15s ease;
 }
+
 .msg-actions:hover {
   opacity: 1;
 }
+
 .msg-action-btn {
   display: inline-flex;
   align-items: center;
@@ -1890,18 +1836,22 @@ function formatTime(iso: string | null): string {
   transition: all 0.15s ease;
   user-select: none;
 }
+
 .msg-action-btn .ic {
   font-size: 13px;
 }
+
 .msg-action-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
   border-color: var(--border-strong, var(--border));
 }
+
 .msg-action-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
 .msg-action-btn.active {
   background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.18));
   border-color: rgba(139, 92, 246, 0.5);
@@ -1913,6 +1863,7 @@ function formatTime(iso: string | null): string {
   border-radius: 12px;
   padding: 0;
 }
+
 .dislike-form {
   width: 320px;
   padding: 14px 14px 12px;
@@ -1920,16 +1871,19 @@ function formatTime(iso: string | null): string {
   flex-direction: column;
   gap: 10px;
 }
+
 .dislike-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
 }
+
 .dislike-reasons {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
+
 .dislike-reasons :deep(.ant-tag-checkable) {
   border-radius: 12px;
   padding: 2px 10px;
@@ -1941,15 +1895,18 @@ function formatTime(iso: string | null): string {
   cursor: pointer;
   transition: all 0.15s ease;
 }
+
 .dislike-reasons :deep(.ant-tag-checkable-checked) {
   background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), rgba(99, 102, 241, 0.22));
   border-color: rgba(139, 92, 246, 0.55);
   color: #a78bfa;
 }
+
 .dislike-comment :deep(textarea) {
   font-size: 12px;
   border-radius: 8px;
 }
+
 .dislike-actions {
   display: flex;
   justify-content: flex-end;
@@ -1974,20 +1931,24 @@ function formatTime(iso: string | null): string {
   margin-left: auto;
   margin-right: 10px;
 }
+
 .thinking-toggle:hover:not(:disabled) {
   border-color: rgba(99, 102, 241, 0.45);
   color: var(--text-primary);
 }
+
 .thinking-toggle.active {
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.14), rgba(168, 85, 247, 0.14));
   border-color: rgba(99, 102, 241, 0.55);
   color: var(--primary);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
 }
+
 .thinking-toggle:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
 .thinking-icon {
   font-size: 13px;
 }
@@ -2003,6 +1964,7 @@ function formatTime(iso: string | null): string {
   padding-left: 0;
   margin: 0 0 4px 0;
 }
+
 .thinking-block.streaming::before {
   content: "";
   position: absolute;
@@ -2014,14 +1976,17 @@ function formatTime(iso: string | null): string {
   background-size: 100% 200%;
   animation: shimmerY 1.4s linear infinite;
 }
+
 @keyframes shimmerY {
   0% {
     background-position: 0 200%;
   }
+
   100% {
     background-position: 0 -200%;
   }
 }
+
 .thinking-header {
   display: inline-flex;
   align-items: center;
@@ -2036,25 +2001,31 @@ function formatTime(iso: string | null): string {
   font-weight: 500;
   line-height: 1.4;
 }
+
 .thinking-header:hover {
   color: var(--text-secondary);
 }
+
 .thinking-header-icon {
   font-size: 11px;
   opacity: 0.75;
 }
+
 .thinking-header-text {
   letter-spacing: 0.2px;
 }
+
 .thinking-header-chevron {
   font-size: 9px;
   transition: transform 0.18s ease;
   opacity: 0.55;
   margin-left: 2px;
 }
+
 .thinking-header-chevron.open {
   transform: rotate(180deg);
 }
+
 .thinking-body {
   padding: 2px 12px 6px;
   color: var(--text-muted);
@@ -2066,23 +2037,28 @@ function formatTime(iso: string | null): string {
   font-style: normal;
   opacity: 0.85;
 }
+
 .thinking-body :deep(p) {
   margin: 2px 0;
 }
+
 .thinking-body :deep(ul),
 .thinking-body :deep(ol) {
   margin: 2px 0;
   padding-left: 16px;
 }
+
 .thinking-body :deep(li) {
   margin: 1px 0;
 }
+
 .thinking-body :deep(code) {
   background: rgba(99, 102, 241, 0.08);
   padding: 0 4px;
   border-radius: 3px;
   font-size: 0.9em;
 }
+
 .thinking-body :deep(pre) {
   margin: 4px 0;
   font-size: 11px;
@@ -2125,6 +2101,7 @@ function formatTime(iso: string | null): string {
   font-weight: 500;
   transition: background 0.15s !important;
 }
+
 .stop-btn:hover {
   background: rgba(239, 68, 68, 0.15) !important;
 }

@@ -17,9 +17,27 @@ export default {
     return fetch("/api/upload", { method: "POST", body: form });
   },
 
-  getFiles: () => http.get<{ files: KbFile[] }>("/files"),
+  getFiles: (params?: { page?: number; page_size?: number; keyword?: string }) =>
+    http.get<{ files: KbFile[]; total: number; page: number; page_size: number }>(
+      "/files",
+      { params },
+    ),
 
-  deleteFile: (source: string) => http.delete(`/files/${encodeURIComponent(source)}`),
+  deleteFile: (idOrSource: string, byId = false) =>
+    byId
+      ? http.delete(`/files/by-id/${encodeURIComponent(idOrSource)}`)
+      : http.delete(`/files/${encodeURIComponent(idOrSource)}`),
+
+  deleteFileById: (id: string) => http.delete(`/files/by-id/${encodeURIComponent(id)}`),
+
+  getFileInfo: (id: string) =>
+    http.get<KbFileInfo>(`/files/by-id/${encodeURIComponent(id)}/info`),
+
+  batchDeleteFiles: (payload: { ids?: string[]; sources?: string[] }) =>
+    http.post<{ deleted: { id: string; source: string }[]; missing: string[]; total: number }>(
+      "/files/batch-delete",
+      payload,
+    ),
 
   // ---- 对话管理 ----
   getConversations: () => http.get<{ conversations: Conversation[] }>("/conversations"),
@@ -35,7 +53,8 @@ export default {
   // ---- 统计 ----
   getStats: () => http.get("/stats"),
 
-  getChunks: (source?: string) => http.get("/chunks", { params: source ? { source } : undefined }),
+  getChunks: (params?: { source?: string; file_id?: string }) =>
+    http.get("/chunks", { params: params || undefined }),
 
   /** SSE 流式问答 */
   queryStream: (
@@ -69,10 +88,19 @@ export default {
 };
 
 export interface KbFile {
+  id: string;
   source: string;
   chunk_count: number;
   total_chars: number;
   uploaded_at: string | null;
+}
+
+export interface KbFileInfo extends KbFile {
+  min_chars: number;
+  max_chars: number;
+  avg_chars: number;
+  last_updated_at: string | null;
+  chunk_index_range: [number, number];
 }
 
 export interface Conversation {
