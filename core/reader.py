@@ -1,9 +1,10 @@
 """
-文件读取器 —— 支持 txt、md、pdf 格式。
+文件读取器 —— 支持 txt、md、pdf、docx、xlsx/xls 格式。
 PDF 读取策略（按优先级）：
   1. PyMuPDF (fitz)  — 首选，支持复杂布局、CJK、嵌入字体
   2. PyPDF2          — 备用，当 PyMuPDF 未安装时使用
   3. 扫描版 PDF       — 当两者均提取不到文本时给出提示
+Word 读取使用 python-docx；Excel 读取使用 openpyxl（.xlsx）/ xlrd（.xls）。
 """
 
 import warnings
@@ -18,11 +19,29 @@ except ImportError:
 
 import PyPDF2
 
+try:
+    import docx as _docx   # type: ignore  # python-docx
+    _HAS_DOCX = True
+except ImportError:
+    _HAS_DOCX = False
+
+try:
+    import openpyxl as _openpyxl   # type: ignore
+    _HAS_OPENPYXL = True
+except ImportError:
+    _HAS_OPENPYXL = False
+
+try:
+    import xlrd as _xlrd   # type: ignore
+    _HAS_XLRD = True
+except ImportError:
+    _HAS_XLRD = False
+
 
 class FileReader:
     """从本地文件提取纯文本"""
 
-    SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
+    SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls"}
 
     @staticmethod
     def read(file_path: str) -> str:
@@ -36,6 +55,10 @@ class FileReader:
             return FileReader._read_text(path)
         elif suffix == ".pdf":
             return FileReader._read_pdf(path)
+        elif suffix == ".docx":
+            return FileReader._read_docx(path)
+        elif suffix in (".xlsx", ".xls"):
+            return FileReader._read_excel(path)
         else:
             raise ValueError(
                 f"不支持的文件格式: {suffix}，仅支持 {FileReader.SUPPORTED_EXTENSIONS}"
@@ -100,3 +123,74 @@ class FileReader:
         except Exception as e:
             warnings.warn(f"PyPDF2 读取失败: {e}")
         return "\n".join(parts)
+
+    @staticmethod
+    def _read_docx(path: Path) -> str:
+        """使用 python-docx 提取 Word 文档文本（段落 + 表格）"""
+        if not _HAS_DOCX:
+            raise RuntimeError(
+                "未安装 python-docx，无法读取 .docx 文件。请运行: pip install python-docx"
+            )
+        doc = _docx.Document(str(path))
+        parts: list[str] = []
+
+        for para in doc.paragraphs:
+            t = para.text.strip()
+            if t:
+                parts.append(t)
+
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                line = " | ".join(c for c in cells if c)
+                if line:
+                    parts.append(line)
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _read_excel(path: Path) -> str:
+        """读取 Excel 文件，每个 sheet 转为 Markdown 表格风格的文本"""
+        suffix = path.suffix.lower()
+        if suffix == ".xlsx":
+            if not _HAS_OPENPYXL:
+                raise RuntimeError(
+                    "未安装 openpyxl，无法读取 .xlsx 文件。请运行: pip install openpyxl"
+                )
+            return FileReader._read_xlsx(path)
+        else:  # .xls
+            if not _HAS_XLRD:
+                raise RuntimeError(
+                    "未安装 xlrd，无法读取 .xls 文件。请运行: pip install xlrd"
+                )
+            return FileReader._read_xls(path)
+
+    @staticmethod
+    def _read_xlsx(path: Path) -> str:
+        wb = _openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+        parts: list[str] = []
+        for sheet in wb.worksheets:
+            sheet_lines: list[str] = [f"# 工作表: {sheet.title}"]
+            for row in sheet.iter_rows(values_only=True):
+                cells = ["" if v is None else str(v).strip() for v in row]
+                if any(cells):
+                    sheet_lines.append(" | ".join(cells))
+            if len(sheet_lines) > 1:
+                parts.append("\n".join(sheet_lines))
+        wb.close()
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _read_xls(path: Path) -> str:
+        book = _xlrd.open_workbook(str(path))
+        parts: list[str] = []
+        for sheet in book.sheets():
+            sheet_lines: list[str] = [f"# 工作表: {sheet.name}"]
+            for r in range(sheet.nrows):
+                row = sheet.row_values(r)
+                cells = ["" if v is None else str(v).strip() for v in row]
+                if any(cells):
+                    sheet_lines.append(" | ".join(cells))
+            if len(sheet_lines) > 1:
+                parts.append("\n".join(sheet_lines))
+        return "\n\n".join(parts)

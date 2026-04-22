@@ -7,6 +7,7 @@ export const useAppStore = defineStore('app', () => {
   const activeConversationId = ref<string | null>(null)
   const totalChunks = ref(0)
   const highlightFile = ref<string | null>(null)
+  const highlightMessageId = ref<number | null>(null)
   const isDark = ref<boolean>(localStorage.getItem('theme') === 'dark')
 
   const activeConversation = computed(
@@ -40,6 +41,10 @@ export const useAppStore = defineStore('app', () => {
     highlightFile.value = source
   }
 
+  function setHighlightMessage(id: number | null) {
+    highlightMessageId.value = id
+  }
+
   function toggleTheme() {
     isDark.value = !isDark.value
     localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
@@ -51,6 +56,7 @@ export const useAppStore = defineStore('app', () => {
     activeConversation,
     totalChunks,
     highlightFile,
+    highlightMessageId,
     isDark,
     setConversations,
     addConversation,
@@ -58,6 +64,7 @@ export const useAppStore = defineStore('app', () => {
     setActive,
     setTotalChunks,
     setHighlightFile,
+    setHighlightMessage,
     toggleTheme,
   }
 })

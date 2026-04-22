@@ -190,6 +190,53 @@ async def delete_conversation(conv_id: str):
     return {"message": f"对话 {conv_id} 已删除"}
 
 
+@app.get("/api/feedback")
+async def get_feedback_summary(
+    rating: int = Query(None, description="筛选: 1=赞, -1=踩, 不传=全部"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    rag = get_rag()
+    if not rag._use_pg:
+        raise HTTPException(400, "当前未启用 PostgreSQL 存储")
+    if rating is not None and rating not in (1, -1):
+        raise HTTPException(400, "rating 只能是 1 或 -1")
+    return rag.vector_store.get_feedback_summary(rating=rating, limit=limit, offset=offset)
+
+
+@app.post("/api/messages/{message_id}/feedback")
+async def set_message_feedback(message_id: int, body: dict):
+    """对助手回答打分：rating = 1(👍) / -1(👎) / 0(取消)
+    可选 reasons (list[str])、comment (str) —— 仅 -1 时建议提供。
+    """
+    rag = get_rag()
+    if not rag._use_pg:
+        raise HTTPException(400, "当前未启用 PostgreSQL 存储")
+    rating = body.get("rating")
+    if rating not in (1, -1, 0):
+        raise HTTPException(400, "rating 必须是 1 / -1 / 0")
+    reasons = body.get("reasons") or []
+    if not isinstance(reasons, list) or not all(isinstance(x, str) for x in reasons):
+        raise HTTPException(400, "reasons 必须是字符串数组")
+    comment = body.get("comment") or ""
+    if not isinstance(comment, str):
+        raise HTTPException(400, "comment 必须是字符串")
+    db_val = None if rating == 0 else rating
+    if not rag.vector_store.set_message_feedback(
+        message_id,
+        db_val,
+        reasons if db_val is not None else None,
+        comment if db_val is not None else None,
+    ):
+        raise HTTPException(404, "消息不存在")
+    return {
+        "message_id": message_id,
+        "rating": rating,
+        "reasons": reasons,
+        "comment": comment,
+    }
+
+
 # ============================================================
 #  问答（SSE 流式）
 # ============================================================
@@ -200,6 +247,8 @@ async def query_question(body: dict):
     conversation_id = body.get("conversation_id", "").strip()
     question = body.get("question", "").strip()
     mode = body.get("mode", "hybrid")
+    enable_thinking = bool(body.get("enable_thinking", False))
+    regenerate = bool(body.get("regenerate", False))
 
     if not question:
         raise HTTPException(400, "问题不能为空")
@@ -216,19 +265,50 @@ async def query_question(body: dict):
         raise HTTPException(400, "知识库为空，请先上传文件")
 
     async def event_stream():
-        try:
-            gen = rag.query_with_conversation(
-                question=question,
-                conversation_id=conversation_id,
-                mode=mode,
-            )
-            for chunk in gen:
-                yield chunk
-        except Exception as e:
-            traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        DONE = object()
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+        def producer():
+            try:
+                for chunk in rag.query_with_conversation(
+                    question=question,
+                    conversation_id=conversation_id,
+                    mode=mode,
+                    enable_thinking=enable_thinking,
+                    regenerate=regenerate,
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as e:
+                traceback.print_exc()
+                err = f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+                loop.call_soon_threadsafe(queue.put_nowait, err)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, DONE)
+
+        task = asyncio.create_task(asyncio.to_thread(producer))
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                if item is DONE:
+                    break
+                yield item
+        finally:
+            await task
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ============================================================

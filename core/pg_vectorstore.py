@@ -122,6 +122,19 @@ class PgVectorStore:
                     created_at      TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            # 反馈字段（自动迁移老库）
+            cur.execute("""
+                ALTER TABLE rag_messages
+                ADD COLUMN IF NOT EXISTS feedback SMALLINT
+            """)
+            cur.execute("""
+                ALTER TABLE rag_messages
+                ADD COLUMN IF NOT EXISTS feedback_reasons TEXT[]
+            """)
+            cur.execute("""
+                ALTER TABLE rag_messages
+                ADD COLUMN IF NOT EXISTS feedback_comment TEXT
+            """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_rag_messages_conv
                 ON rag_messages(conversation_id, created_at)
@@ -391,7 +404,8 @@ class PgVectorStore:
     def get_conversation_messages(self, conv_id: str) -> List[Dict]:
         with self.conn.cursor() as cur:
             cur.execute(
-                """SELECT id, role, content, retrieval_info, created_at
+                """SELECT id, role, content, retrieval_info, created_at,
+                          feedback, feedback_reasons, feedback_comment
                    FROM rag_messages
                    WHERE conversation_id = %s
                    ORDER BY created_at""",
@@ -406,6 +420,9 @@ class PgVectorStore:
                 "content": r[2],
                 "retrieval_info": r[3],
                 "created_at": r[4].isoformat() if r[4] else None,
+                "feedback": r[5],
+                "feedback_reasons": r[6] or [],
+                "feedback_comment": r[7],
             }
             for r in rows
         ]
@@ -416,17 +433,167 @@ class PgVectorStore:
         role: str,
         content: str,
         retrieval_info: dict = None,
-    ):
+    ) -> int:
         with self.conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO rag_messages (conversation_id, role, content, retrieval_info)
-                   VALUES (%s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s) RETURNING id""",
                 (conv_id, role, content, Json(retrieval_info) if retrieval_info else None),
             )
+            new_id = cur.fetchone()[0]
             cur.execute(
                 "UPDATE rag_conversations SET updated_at = NOW() WHERE id = %s",
                 (conv_id,),
             )
+        return new_id
+
+    def set_message_feedback(
+        self,
+        message_id: int,
+        rating,
+        reasons: list = None,
+        comment: str = None,
+    ) -> bool:
+        """rating: 1 / -1 / None(取消，同时清空 reasons/comment)"""
+        with self.conn.cursor() as cur:
+            if rating is None:
+                cur.execute(
+                    """UPDATE rag_messages
+                       SET feedback = NULL,
+                           feedback_reasons = NULL,
+                           feedback_comment = NULL
+                       WHERE id = %s""",
+                    (message_id,),
+                )
+            else:
+                cur.execute(
+                    """UPDATE rag_messages
+                       SET feedback = %s,
+                           feedback_reasons = %s,
+                           feedback_comment = %s
+                       WHERE id = %s""",
+                    (rating, reasons or None, (comment or None), message_id),
+                )
+            return cur.rowcount > 0
+
+    def get_feedback_summary(
+        self, rating: int = None, limit: int = 100, offset: int = 0
+    ) -> Dict:
+        """汇总反馈数据：总数、原因统计、详细列表（含 question/answer/对话标题）。"""
+        with self.conn.cursor() as cur:
+            # 整体计数
+            cur.execute(
+                """SELECT
+                       COUNT(*) FILTER (WHERE feedback = 1)  AS up,
+                       COUNT(*) FILTER (WHERE feedback = -1) AS down,
+                       COUNT(*) FILTER (WHERE feedback IS NOT NULL) AS total_with_feedback,
+                       (SELECT COUNT(*) FROM rag_messages WHERE role = 'assistant') AS total_answers
+                   FROM rag_messages"""
+            )
+            row = cur.fetchone()
+            stats = {
+                "up": int(row[0] or 0),
+                "down": int(row[1] or 0),
+                "total_with_feedback": int(row[2] or 0),
+                "total_answers": int(row[3] or 0),
+            }
+
+            # 原因分布（仅 -1）
+            cur.execute(
+                """SELECT reason, COUNT(*) AS cnt
+                   FROM (
+                       SELECT UNNEST(feedback_reasons) AS reason
+                       FROM rag_messages
+                       WHERE feedback = -1
+                   ) t
+                   GROUP BY reason
+                   ORDER BY cnt DESC"""
+            )
+            reason_counts = [{"reason": r[0], "count": int(r[1])} for r in cur.fetchall()]
+
+            # 详细列表（最近的反馈，附带问题与对话标题）
+            where = "m.feedback IS NOT NULL"
+            params: list = []
+            if rating in (1, -1):
+                where = "m.feedback = %s"
+                params.append(rating)
+
+            cur.execute(
+                f"""WITH ranked AS (
+                       SELECT m.id, m.conversation_id, m.role, m.content,
+                              m.feedback, m.feedback_reasons, m.feedback_comment, m.created_at,
+                              LAG(m.content) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at) AS prev_content,
+                              LAG(m.role) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at) AS prev_role
+                       FROM rag_messages m
+                   )
+                   SELECT r.id, r.conversation_id, c.title, r.content,
+                          r.feedback, r.feedback_reasons, r.feedback_comment, r.created_at,
+                          CASE WHEN r.prev_role = 'user' THEN r.prev_content ELSE NULL END AS question
+                   FROM ranked r
+                   LEFT JOIN rag_conversations c ON c.id = r.conversation_id
+                   WHERE r.role = 'assistant' AND {where.replace('m.', 'r.')}
+                   ORDER BY r.created_at DESC
+                   LIMIT %s OFFSET %s""",
+                (*params, limit, offset),
+            )
+            items = [
+                {
+                    "id": r[0],
+                    "conversation_id": r[1],
+                    "conversation_title": r[2],
+                    "answer": r[3],
+                    "rating": r[4],
+                    "reasons": r[5] or [],
+                    "comment": r[6],
+                    "created_at": r[7].isoformat() if r[7] else None,
+                    "question": r[8],
+                }
+                for r in cur.fetchall()
+            ]
+
+            # 趋势：近 30 天每日 up/down 数（按 created_at 截断到日）
+            cur.execute(
+                """WITH days AS (
+                       SELECT generate_series(
+                           (CURRENT_DATE - INTERVAL '29 days')::date,
+                           CURRENT_DATE::date,
+                           INTERVAL '1 day'
+                       )::date AS d
+                   )
+                   SELECT d.d::text,
+                          COALESCE(SUM(CASE WHEN m.feedback = 1 THEN 1 ELSE 0 END), 0) AS up,
+                          COALESCE(SUM(CASE WHEN m.feedback = -1 THEN 1 ELSE 0 END), 0) AS down
+                   FROM days d
+                   LEFT JOIN rag_messages m
+                     ON m.feedback IS NOT NULL
+                    AND m.created_at::date = d.d
+                   GROUP BY d.d
+                   ORDER BY d.d"""
+            )
+            trend = [
+                {"date": r[0], "up": int(r[1]), "down": int(r[2])}
+                for r in cur.fetchall()
+            ]
+
+        return {
+            "stats": stats,
+            "reason_counts": reason_counts,
+            "items": items,
+            "trend": trend,
+        }
+
+    def delete_last_assistant_message(self, conv_id: str) -> bool:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """DELETE FROM rag_messages
+                   WHERE id = (
+                       SELECT id FROM rag_messages
+                       WHERE conversation_id = %s AND role = 'assistant'
+                       ORDER BY created_at DESC LIMIT 1
+                   )""",
+                (conv_id,),
+            )
+            return cur.rowcount > 0
 
     def update_conversation_title(self, conv_id: str, title: str):
         with self.conn.cursor() as cur:

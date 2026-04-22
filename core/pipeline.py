@@ -220,12 +220,15 @@ class RAGPipeline:
         context = "\n\n".join(context_parts)
 
         system_prompt = (
-            "你是一个专业的知识问答助手。请根据以下参考资料回答用户的问题。\n"
+            "你是一个专业的中文知识问答助手。请根据以下参考资料回答用户的问题。\n"
             "要求：\n"
-            "1. 尽量基于参考资料中的内容来回答\n"
-            "2. 如果参考资料中没有相关信息，请如实说明\n"
-            "3. 回答要准确、简洁、有条理\n"
-            "4. 如有需要，可以引用具体的来源片段\n\n"
+            "1. 全程使用中文（包括内部思考过程也必须使用中文，禁止使用英文推理）\n"
+            "2. 尽量基于参考资料中的内容来回答\n"
+            "3. 如果参考资料中没有相关信息，请如实说明\n"
+            "4. 回答要准确、简洁、有条理\n"
+            "5. **必须**在每个使用了参考资料的语句末尾，用 [n] 形式标注引用编号"
+            "（n 对应【片段n】，多个用 [1][2] 拼接，不要写成 [1,2]）；"
+            "未使用参考资料的内容不要添加引用标注\n\n"
             f"参考资料：\n{context}"
         )
 
@@ -242,6 +245,8 @@ class RAGPipeline:
         conversation_id: str,
         mode: str = "hybrid",
         top_k: int = None,
+        enable_thinking: bool = False,
+        regenerate: bool = False,
     ) -> Generator[str, None, None]:
         """
         流式问答（支持对话持久化）。
@@ -249,11 +254,18 @@ class RAGPipeline:
 
         Yields: SSE 格式字符串
         """
+        import time
+
         k = top_k or self.config.TOP_K
+        t_total_start = time.perf_counter()
 
         # 检索
-        print(f"\n🔍 正在检索（模式: {mode}）...")
+        print(f"\n🔍 [Q] {question[:80]}{'...' if len(question) > 80 else ''}")
+        print(f"🔍 正在检索（模式: {mode}, top_k={k}）...")
+        t_retrieval_start = time.perf_counter()
         results = self.retriever.search(question, top_k=k, mode=mode)
+        t_retrieval = time.perf_counter() - t_retrieval_start
+        print(f"   ⏱️  检索耗时: {t_retrieval*1000:.0f} ms, 命中 {len(results)} 条")
 
         if not results:
             yield "data: {\"type\": \"error\", \"message\": \"知识库为空，请先上传文件。\"}\n\n"
@@ -270,20 +282,34 @@ class RAGPipeline:
                 score_info.append(f"RRF: {r['rrf_score']:.6f}")
             print(f"    [{i+1}] {' | '.join(score_info)} | 来源: {r['source']}")
 
-        # 从 DB 加载对话历史
+        # 从 DB 加载对话历史（重新生成时先删掉最后一条助手回复，避免污染上下文）
+        if self._use_pg and regenerate:
+            self.vector_store.delete_last_assistant_message(conversation_id)
+
         history: List[Dict] = []
         if self._use_pg:
             raw = self.vector_store.get_conversation_messages(conversation_id)
             history = [{"role": m["role"], "content": m["content"]} for m in raw]
+            # 重新生成时，最后一条用户消息已存在，不再重复入库
+            if regenerate and history and history[-1]["role"] == "user":
+                history = history[:-1]  # 当前 question 通过 _build_messages 单独加入
 
         messages = self._build_messages(question, results, history)
 
-        # 将用户消息存入 DB
-        if self._use_pg:
+        # 估算 prompt 体量
+        prompt_chars = sum(len(m.get("content", "")) for m in messages)
+        print(
+            f"   📦 历史轮次: {len(history)//2}, 消息数: {len(messages)}, "
+            f"prompt 字符: {prompt_chars}, regenerate={regenerate}"
+        )
+
+        # 将用户消息存入 DB（重新生成时跳过）
+        if self._use_pg and not regenerate:
             self.vector_store.add_message(conversation_id, "user", question)
 
-            # 对话标题（第一条消息时，用占位标题，待 LLM 回复后用 AI 来命名）
-            is_first_message = not history
+        if self._use_pg:
+            # 第一条消息时，用占位标题，待 LLM 回复后用 AI 来命名
+            is_first_message = not history and not regenerate
 
         # 构造检索信息（用于前端展示）
         retrieval_info = {
@@ -295,7 +321,7 @@ class RAGPipeline:
                     "similarity": r.get("similarity"),
                     "bm25_score": r.get("bm25_score"),
                     "rrf_score": r.get("rrf_score"),
-                    "text_preview": r["text"][:100],
+                    "text_preview": r["text"],
                 }
                 for r in results
             ],
@@ -307,38 +333,80 @@ class RAGPipeline:
         yield f"data: {json.dumps({'type': 'retrieval', 'data': retrieval_info}, ensure_ascii=False)}\n\n"
 
         # 流式生成回答
+        print(f"   🤖 调用 LLM: model={self.config.LLM_MODEL}, stream=True, thinking={enable_thinking}")
+        t_llm_start = time.perf_counter()
         resp = self.client.chat.completions.create(
             model=self.config.LLM_MODEL,
             messages=messages,
             temperature=0.7,
             max_tokens=2000,
             stream=True,
+            extra_body={"enable_thinking": bool(enable_thinking)},
         )
 
         collected: List[str] = []
+        thinking_parts: List[str] = []
+        chunk_count = 0
+        t_first_token = None
+        t_first_thinking = None
         for chunk in resp:
             delta = chunk.choices[0].delta
+            # qwen3 thinking 增量在 reasoning_content 字段
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                if t_first_thinking is None:
+                    t_first_thinking = time.perf_counter() - t_llm_start
+                    print(f"   💭 思考首字: {t_first_thinking*1000:.0f} ms")
+                thinking_parts.append(reasoning)
+                yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning}, ensure_ascii=False)}\n\n"
             if delta.content:
+                if t_first_token is None:
+                    t_first_token = time.perf_counter() - t_llm_start
+                    print(f"   ⚡ 首字耗时 (TTFT): {t_first_token*1000:.0f} ms")
                 collected.append(delta.content)
+                chunk_count += 1
                 yield f"data: {json.dumps({'type': 'content', 'content': delta.content}, ensure_ascii=False)}\n\n"
 
+        t_llm_total = time.perf_counter() - t_llm_start
         answer = "".join(collected)
+        thinking_text = "".join(thinking_parts)
+        ans_chars = len(answer)
+        tps = (ans_chars / t_llm_total) if t_llm_total > 0 else 0
+        print(
+            f"   ✅ LLM 完成: 思考 {len(thinking_text)} 字符 + 回答 {ans_chars} 字符 / "
+            f"{chunk_count} chunks, 总耗时 {t_llm_total:.2f}s, 速度 {tps:.1f} 字符/s"
+        )
 
         # 将助手回复存入 DB
+        new_message_id = None
         if self._use_pg:
-            self.vector_store.add_message(
-                conversation_id, "assistant", answer, retrieval_info
+            t_db_start = time.perf_counter()
+            saved_info = dict(retrieval_info)
+            if thinking_text:
+                saved_info["thinking"] = thinking_text
+            new_message_id = self.vector_store.add_message(
+                conversation_id, "assistant", answer, saved_info
             )
             # 第一条消息时，用 LLM 自动生成一个简洁的对话标题
             if is_first_message:
                 try:
+                    t_title_start = time.perf_counter()
                     title = self._generate_title(question, answer)
-                except Exception:
+                    print(f"   🏷️  标题生成: {(time.perf_counter()-t_title_start)*1000:.0f} ms → {title!r}")
+                except Exception as e:
                     title = question[:30] + ("..." if len(question) > 30 else "")
+                    print(f"   ⚠️  标题生成失败: {e}, 退化为问题前缀")
                 self.vector_store.update_conversation_title(conversation_id, title)
                 yield f"data: {json.dumps({'type': 'title', 'title': title}, ensure_ascii=False)}\n\n"
+            print(f"   💾 DB 写入耗时: {(time.perf_counter()-t_db_start)*1000:.0f} ms")
 
-        yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+        t_total = time.perf_counter() - t_total_start
+        print(
+            f"🏁 query 完成: 总 {t_total:.2f}s "
+            f"(检索 {t_retrieval*1000:.0f}ms + LLM {t_llm_total:.2f}s)"
+        )
+
+        yield f"data: {json.dumps({'type': 'done', 'message_id': new_message_id}, ensure_ascii=False)}\n\n"
 
     def query(self, question: str, top_k: int = None, stream: bool = None, mode: str = "hybrid") -> str:
         """非持久化问答（保留向后兼容，用于命令行模式）"""

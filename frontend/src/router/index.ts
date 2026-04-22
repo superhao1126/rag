@@ -10,6 +10,11 @@ const router = createRouter({
       name: 'files',
       component: () => import('@/views/DbFilesView.vue'),
     },
+    {
+      path: '/feedback',
+      name: 'feedback',
+      component: () => import('@/views/FeedbackView.vue'),
+    },
   ],
 })
 

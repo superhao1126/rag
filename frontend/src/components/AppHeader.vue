@@ -2,7 +2,12 @@
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAppStore } from "@/stores/session";
-import { MessageOutlined, DatabaseOutlined, BookOutlined } from "@ant-design/icons-vue";
+import {
+  MessageOutlined,
+  DatabaseOutlined,
+  BookOutlined,
+  LikeOutlined,
+} from "@ant-design/icons-vue";
 
 const store = useAppStore();
 const route = useRoute();
@@ -40,6 +45,14 @@ const currentRoute = computed(() => route.name as string);
           <DatabaseOutlined />
           文件管理
         </button>
+        <button
+          class="nav-btn"
+          :class="{ active: currentRoute === 'feedback' }"
+          @click="router.push('/feedback')"
+        >
+          <LikeOutlined />
+          反馈分析
+        </button>
       </nav>
     </div>
 
@@ -73,7 +86,9 @@ const currentRoute = computed(() => route.name as string);
   position: relative;
   flex-shrink: 0;
   box-shadow: var(--header-shadow);
-  transition: background 0.25s ease, box-shadow 0.25s ease;
+  transition:
+    background 0.25s ease,
+    box-shadow 0.25s ease;
 }
 
 .header-glow-line {
@@ -113,7 +128,7 @@ const currentRoute = computed(() => route.name as string);
 }
 
 /* 深色模式：渐变 Logo */
-:root[data-theme='dark'] .logo-icon {
+:root[data-theme="dark"] .logo-icon {
   background: linear-gradient(135deg, #a5b4fc, #c084fc);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -127,7 +142,7 @@ const currentRoute = computed(() => route.name as string);
   color: rgba(255, 255, 255, 0.95);
 }
 
-:root[data-theme='dark'] .logo-text {
+:root[data-theme="dark"] .logo-text {
   background: linear-gradient(135deg, #e0e7ff 0%, #c4b5fd 60%, #a78bfa 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
