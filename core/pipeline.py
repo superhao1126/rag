@@ -456,8 +456,8 @@ class RAGPipeline:
 
     def get_stats(self) -> Dict:
         stats = self.vector_store.get_stats()
-        stats["BM25 文档数"] = self.bm25_index.N
-        stats["BM25 词汇量"] = len(self.bm25_index.df)
+        stats["bm25_documents"] = self.bm25_index.N
+        stats["bm25_vocabulary"] = len(self.bm25_index.df)
         return stats
 
     def get_chunk_visualization(self, source: str = None) -> Dict:
@@ -473,9 +473,9 @@ class RAGPipeline:
         print("=" * 60)
 
         stats = self.get_stats()
-        print(f"  知识库: {stats['文本块总数']} 个文本块")
-        print(f"  BM25:  {stats['BM25 词汇量']} 个唯一词")
-        sources = stats["已加载来源"]
+        print(f"  知识库: {stats['total_chunks']} 个文本块")
+        print(f"  BM25:  {stats['bm25_vocabulary']} 个唯一词")
+        sources = stats["sources"]
         print(f"  来源:  {', '.join(sources) if sources else '（空）'}")
         stream_s = "✅ 开启" if self.config.STREAM else "❌ 关闭"
         print(f"  流式:  {stream_s}  |  记忆: 最近 {self.config.HISTORY_TURNS} 轮")

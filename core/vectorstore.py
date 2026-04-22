@@ -129,8 +129,9 @@ class VectorStore:
 
     def get_stats(self) -> Dict:
         return {
-            "文本块总数": len(self.metadata),
-            "向量维度": self.vectors.shape[1] if self.vectors is not None else 0,
-            "存储目录": str(self.storage_dir),
-            "已加载来源": list(set(m.get("source", "") for m in self.metadata)),
+            "total_chunks": len(self.metadata),
+            "embedding_dimension": self.vectors.shape[1] if self.vectors is not None else 0,
+            "storage_type": "Local FAISS",
+            "storage_path": str(self.storage_dir),
+            "sources": list(set(m.get("source", "") for m in self.metadata)),
         }

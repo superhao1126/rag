@@ -237,7 +237,7 @@ async function loadConversations() {
 async function loadStats() {
   try {
     const res = await api.getStats();
-    store.setTotalChunks(res.data["文本块总数"] ?? 0);
+    store.setTotalChunks(res.data["total_chunks"] ?? 0);
   } catch {
     /* ignore */
   }

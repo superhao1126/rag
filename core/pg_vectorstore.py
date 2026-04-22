@@ -311,10 +311,10 @@ class PgVectorStore:
             sources = [row[0] for row in cur.fetchall()]
 
         return {
-            "文本块总数": total,
-            "向量维度": self.embedding_dimension,
-            "存储方式": "PostgreSQL + pgvector",
-            "已加载来源": sources,
+            "total_chunks": total,
+            "embedding_dimension": self.embedding_dimension,
+            "storage_type": "PostgreSQL + pgvector",
+            "sources": sources,
         }
 
     def get_files(
