@@ -39,6 +39,57 @@ export interface RagStats {
   bm25_vocabulary: number;
 }
 
+export interface LlmModelUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+}
+
+export interface LlmStats {
+  default_model: string | null;
+  totals: LlmModelUsage;
+  models: Record<string, LlmModelUsage>;
+  calls_by_type: Record<string, number>;
+  last_call_at: number | null;
+  persisted?: boolean;
+}
+
+export interface LlmCallEntry {
+  id: number;
+  ts: number;
+  model: string;
+  call_type: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  note: string | null;
+}
+
+export interface LlmCallsPage {
+  items: LlmCallEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface LlmTrendBucketTypeStat {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+}
+
+export interface LlmTrendPoint {
+  bucket: string;
+  ts: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  by_type?: Record<string, LlmTrendBucketTypeStat>;
+}
+
 export interface Conversation {
   id: string;
   title: string;

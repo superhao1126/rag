@@ -1,12 +1,20 @@
 // SSE 流式问答
 import { consumeSSE } from "./sse";
-import type { RetrievalResult } from "./types";
+import type { RetrievalResult, LlmStats } from "./types";
+
+export interface UsagePayload {
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
 
 /** 问答事件（与后端 SSE 协议对齐） */
 export type QueryEvent =
   | { type: "retrieval"; data: { mode: string; results: RetrievalResult[] } }
   | { type: "thinking"; content: string }
   | { type: "content"; content: string }
+  | { type: "usage"; usage: UsagePayload; totals: LlmStats }
   | { type: "done"; message_id?: number; [k: string]: unknown }
   | { type: "title"; title: string }
   | { type: "error"; message: string };
@@ -25,6 +33,7 @@ export interface QueryStreamHandlers {
   onThinking?: (chunk: string) => void;
   onContent?: (chunk: string) => void;
   onTitle?: (title: string) => void;
+  onUsage?: (usage: UsagePayload, totals: LlmStats) => void;
   onDone?: (info: { message_id?: number }) => void | Promise<void>;
   onError?: (msg: string) => void;
 }
@@ -81,6 +90,9 @@ export const queryApi = {
             break;
           case "title":
             handlers.onTitle?.(evt.title);
+            break;
+          case "usage":
+            handlers.onUsage?.(evt.usage, evt.totals);
             break;
           case "done":
             await handlers.onDone?.({ message_id: evt.message_id });

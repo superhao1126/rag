@@ -16,6 +16,7 @@ from core.chunker import TextChunker
 from core.vectorstore import VectorStore
 from core.bm25 import BM25Index
 from core.retriever import HybridRetriever
+from core.llm_stats import llm_stats
 
 
 class RAGPipeline:
@@ -57,6 +58,8 @@ class RAGPipeline:
                 embedding_dimension=self.config.EMBEDDING_DIMENSION,
             )
             print("💾 向量存储: PostgreSQL + pgvector")
+            # 将 token 调用流水持久化到 PG
+            llm_stats.attach_storage(self.vector_store)
         else:
             self.vector_store = VectorStore(
                 client=self.client,
@@ -208,6 +211,18 @@ class RAGPipeline:
             stream=False,
         )
         raw = resp.choices[0].message.content or ""
+        try:
+            usage = getattr(resp, "usage", None)
+            if usage:
+                llm_stats.record(
+                    model=self.config.LLM_MODEL,
+                    prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                    total_tokens=getattr(usage, "total_tokens", None),
+                    call_type="title",
+                )
+        except Exception:
+            pass
         title = raw.strip().strip('"\'《》「」【】').strip()
         return title[:20] if title else question[:20]
 
@@ -341,6 +356,7 @@ class RAGPipeline:
             temperature=0.7,
             max_tokens=2000,
             stream=True,
+            stream_options={"include_usage": True},
             extra_body={"enable_thinking": bool(enable_thinking)},
         )
 
@@ -349,7 +365,12 @@ class RAGPipeline:
         chunk_count = 0
         t_first_token = None
         t_first_thinking = None
+        last_usage = None
         for chunk in resp:
+            if getattr(chunk, "usage", None):
+                last_usage = chunk.usage
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
             # qwen3 thinking 增量在 reasoning_content 字段
             reasoning = getattr(delta, "reasoning_content", None)
@@ -376,6 +397,34 @@ class RAGPipeline:
             f"   ✅ LLM 完成: 思考 {len(thinking_text)} 字符 + 回答 {ans_chars} 字符 / "
             f"{chunk_count} chunks, 总耗时 {t_llm_total:.2f}s, 速度 {tps:.1f} 字符/s"
         )
+
+        # 记录 token 用量并通过 SSE 推送给前端
+        usage_payload = None
+        if last_usage:
+            prompt_tokens = getattr(last_usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(last_usage, "completion_tokens", 0) or 0
+            total_tokens = getattr(last_usage, "total_tokens", None)
+            try:
+                llm_stats.record(
+                    model=self.config.LLM_MODEL,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    call_type="chat",
+                )
+            except Exception:
+                pass
+            usage_payload = {
+                "model": self.config.LLM_MODEL,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens if total_tokens is not None else (prompt_tokens + completion_tokens),
+            }
+            print(
+                f"   📊 token 用量: prompt={prompt_tokens}, completion={completion_tokens}, "
+                f"total={usage_payload['total_tokens']}"
+            )
+            yield f"data: {json.dumps({'type': 'usage', 'usage': usage_payload, 'totals': llm_stats.snapshot(self.config.LLM_MODEL)}, ensure_ascii=False)}\n\n"
 
         # 将助手回复存入 DB
         new_message_id = None
@@ -431,6 +480,18 @@ class RAGPipeline:
                 temperature=0.7,
                 max_tokens=2000,
             )
+            try:
+                usage = getattr(resp, "usage", None)
+                if usage:
+                    llm_stats.record(
+                        model=self.config.LLM_MODEL,
+                        prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                        completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                        total_tokens=getattr(usage, "total_tokens", None),
+                        call_type="chat",
+                    )
+            except Exception:
+                pass
             return resp.choices[0].message.content
 
     def _stream_generate(self, messages: List[Dict]) -> str:

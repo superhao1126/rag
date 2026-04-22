@@ -57,3 +57,19 @@ CREATE TABLE IF NOT EXISTS rag_messages (
 
 CREATE INDEX IF NOT EXISTS idx_rag_messages_conv
     ON rag_messages(conversation_id, created_at);
+
+-- LLM / Embedding 调用流水（用于 token 用量统计页面）
+CREATE TABLE IF NOT EXISTS rag_llm_calls (
+    id                 BIGSERIAL PRIMARY KEY,
+    ts                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    model              VARCHAR(128) NOT NULL,
+    call_type          VARCHAR(32)  NOT NULL DEFAULT 'chat',  -- chat | title | embedding
+    prompt_tokens      INTEGER NOT NULL DEFAULT 0,
+    completion_tokens  INTEGER NOT NULL DEFAULT 0,
+    total_tokens       INTEGER NOT NULL DEFAULT 0,
+    note               TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_llm_calls_ts    ON rag_llm_calls(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_rag_llm_calls_type  ON rag_llm_calls(call_type);
+CREATE INDEX IF NOT EXISTS idx_rag_llm_calls_model ON rag_llm_calls(model);

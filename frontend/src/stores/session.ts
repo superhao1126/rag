@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Conversation } from '../api'
+import type { Conversation, LlmStats } from '../api'
 
 export const useAppStore = defineStore('app', () => {
   const conversations = ref<Conversation[]>([])
@@ -9,6 +9,7 @@ export const useAppStore = defineStore('app', () => {
   const highlightFile = ref<string | null>(null)
   const highlightMessageId = ref<number | null>(null)
   const isDark = ref<boolean>(localStorage.getItem('theme') === 'dark')
+  const llmStats = ref<LlmStats | null>(null)
 
   const activeConversation = computed(
     () => conversations.value.find((c) => c.id === activeConversationId.value) ?? null,
@@ -50,6 +51,10 @@ export const useAppStore = defineStore('app', () => {
     localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
   }
 
+  function setLlmStats(s: LlmStats | null) {
+    llmStats.value = s
+  }
+
   return {
     conversations,
     activeConversationId,
@@ -58,6 +63,7 @@ export const useAppStore = defineStore('app', () => {
     highlightFile,
     highlightMessageId,
     isDark,
+    llmStats,
     setConversations,
     addConversation,
     removeConversation,
@@ -66,5 +72,6 @@ export const useAppStore = defineStore('app', () => {
     setHighlightFile,
     setHighlightMessage,
     toggleTheme,
+    setLlmStats,
   }
 })

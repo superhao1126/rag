@@ -451,6 +451,9 @@ async function sendQuestion(opts: { regenerate?: boolean; question?: string } = 
           const conv = store.conversations.find((c) => c.id === store.activeConversationId);
           if (conv) conv.title = title;
         },
+        onUsage: (_usage, totals) => {
+          store.setLlmStats(totals);
+        },
         onDone: async ({ message_id }) => {
           const msg = messages.value[assistantIdx];
           if (msg && message_id) msg.id = message_id;

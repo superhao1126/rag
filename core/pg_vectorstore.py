@@ -10,6 +10,8 @@ import numpy as np
 from typing import List, Dict, Optional
 from openai import OpenAI
 
+from core.llm_stats import llm_stats
+
 try:
     import psycopg2
     from psycopg2.extras import execute_batch, Json
@@ -146,6 +148,32 @@ class PgVectorStore:
                 ON rag_messages(conversation_id, created_at)
             """)
 
+            # LLM / Embedding 调用流水
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS rag_llm_calls (
+                    id                 BIGSERIAL PRIMARY KEY,
+                    ts                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    model              VARCHAR(128) NOT NULL,
+                    call_type          VARCHAR(32)  NOT NULL DEFAULT 'chat',
+                    prompt_tokens      INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens  INTEGER NOT NULL DEFAULT 0,
+                    total_tokens       INTEGER NOT NULL DEFAULT 0,
+                    note               TEXT
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rag_llm_calls_ts
+                ON rag_llm_calls(ts DESC)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rag_llm_calls_type
+                ON rag_llm_calls(call_type)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rag_llm_calls_model
+                ON rag_llm_calls(model)
+            """)
+
         print("  ✅ PostgreSQL 数据库表已就绪")
 
     # ---- metadata 属性 ----
@@ -201,6 +229,19 @@ class PgVectorStore:
                         input=batch,
                     )
                     all_embeddings.extend([item.embedding for item in response.data])
+                    try:
+                        usage = getattr(response, "usage", None)
+                        if usage:
+                            llm_stats.record(
+                                model=self.embedding_model,
+                                prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                                completion_tokens=0,
+                                total_tokens=getattr(usage, "total_tokens", None),
+                                call_type="embedding",
+                                note=f"batch={len(batch)}",
+                            )
+                    except Exception:
+                        pass
                     if on_progress:
                         on_progress(current, total_batches)
                     elif total_batches > 1:
@@ -721,6 +762,206 @@ class PgVectorStore:
         with self.conn.cursor() as cur:
             cur.execute("SELECT 1 FROM rag_conversations WHERE id = %s", (conv_id,))
             return cur.fetchone() is not None
+
+    # ---- LLM / Embedding 调用流水持久化 ----
+
+    def insert_llm_call(
+        self,
+        model: str,
+        call_type: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        note: Optional[str] = None,
+    ) -> Dict:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO rag_llm_calls
+                    (model, call_type, prompt_tokens, completion_tokens, total_tokens, note)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id, EXTRACT(EPOCH FROM ts)::DOUBLE PRECISION
+                """,
+                (model, call_type, prompt_tokens, completion_tokens, total_tokens, note),
+            )
+            row = cur.fetchone()
+        return {"id": int(row[0]), "ts": float(row[1])}
+
+    def aggregate_llm_calls(self) -> Dict:
+        """重启时用于复原 totals / models / calls_by_type"""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT model,
+                       COALESCE(SUM(prompt_tokens), 0),
+                       COALESCE(SUM(completion_tokens), 0),
+                       COALESCE(SUM(total_tokens), 0),
+                       COUNT(*)
+                  FROM rag_llm_calls
+                 GROUP BY model
+                """
+            )
+            models = {
+                r[0]: {
+                    "prompt_tokens": int(r[1]),
+                    "completion_tokens": int(r[2]),
+                    "total_tokens": int(r[3]),
+                    "calls": int(r[4]),
+                }
+                for r in cur.fetchall()
+            }
+            cur.execute(
+                """
+                SELECT call_type, COUNT(*) FROM rag_llm_calls GROUP BY call_type
+                """
+            )
+            calls_by_type = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute(
+                "SELECT EXTRACT(EPOCH FROM MAX(ts))::DOUBLE PRECISION FROM rag_llm_calls"
+            )
+            row = cur.fetchone()
+            last = float(row[0]) if row and row[0] is not None else None
+        return {"models": models, "calls_by_type": calls_by_type, "last_call_at": last}
+
+    def query_llm_calls(
+        self,
+        page: int = 1,
+        page_size: int = 50,
+        call_type: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Dict:
+        page = max(1, int(page or 1))
+        page_size = max(1, min(500, int(page_size or 50)))
+        offset = (page - 1) * page_size
+        where = []
+        params: List = []
+        if call_type:
+            where.append("call_type = %s")
+            params.append(call_type)
+        if model:
+            where.append("model = %s")
+            params.append(model)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        with self.conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM rag_llm_calls {where_sql}", params)
+            total = int(cur.fetchone()[0])
+            cur.execute(
+                f"""
+                SELECT id, EXTRACT(EPOCH FROM ts)::DOUBLE PRECISION,
+                       model, call_type, prompt_tokens, completion_tokens, total_tokens, note
+                  FROM rag_llm_calls
+                  {where_sql}
+                 ORDER BY id DESC
+                 LIMIT %s OFFSET %s
+                """,
+                params + [page_size, offset],
+            )
+            items = [
+                {
+                    "id": int(r[0]),
+                    "ts": float(r[1]) if r[1] is not None else None,
+                    "model": r[2],
+                    "call_type": r[3],
+                    "prompt_tokens": int(r[4] or 0),
+                    "completion_tokens": int(r[5] or 0),
+                    "total_tokens": int(r[6] or 0),
+                    "note": r[7],
+                }
+                for r in cur.fetchall()
+            ]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    def reset_llm_calls(self) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE rag_llm_calls RESTART IDENTITY")
+
+    def trend_llm_calls(self, bucket: str = "day", points: int = 30) -> List[Dict]:
+        """按天/小时聚合 token 用量，返回按时间升序的桶列表（缺失桶补零）
+
+        每个桶包含：
+        - prompt_tokens / completion_tokens / total_tokens / calls   总量
+        - by_type: { chat: {prompt, completion, total, calls}, embedding: {...}, title: {...} }
+        """
+        bucket = "hour" if bucket == "hour" else "day"
+        points = max(1, min(int(points or 30), 365))
+        if bucket == "hour":
+            interval_sql = "1 hour"
+            trunc = "hour"
+        else:
+            interval_sql = "1 day"
+            trunc = "day"
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                WITH series AS (
+                    SELECT generate_series(
+                        date_trunc('{trunc}', NOW()) - (%s - 1) * INTERVAL '{interval_sql}',
+                        date_trunc('{trunc}', NOW()),
+                        INTERVAL '{interval_sql}'
+                    ) AS bucket
+                ),
+                agg AS (
+                    SELECT date_trunc('{trunc}', ts) AS bucket,
+                           COALESCE(call_type, 'chat') AS call_type,
+                           COALESCE(SUM(prompt_tokens), 0)     AS prompt_tokens,
+                           COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                           COALESCE(SUM(total_tokens), 0)      AS total_tokens,
+                           COUNT(*)                            AS calls
+                      FROM rag_llm_calls
+                     WHERE ts >= date_trunc('{trunc}', NOW()) - (%s - 1) * INTERVAL '{interval_sql}'
+                     GROUP BY 1, 2
+                )
+                SELECT s.bucket,
+                       a.call_type,
+                       COALESCE(a.prompt_tokens, 0),
+                       COALESCE(a.completion_tokens, 0),
+                       COALESCE(a.total_tokens, 0),
+                       COALESCE(a.calls, 0)
+                  FROM series s
+                  LEFT JOIN agg a ON a.bucket = s.bucket
+                 ORDER BY s.bucket
+                """,
+                (points, points),
+            )
+            rows = cur.fetchall()
+
+        from collections import defaultdict
+
+        buckets: Dict = {}
+        for r in rows:
+            ts = r[0]
+            key = ts.isoformat() if ts else None
+            if key not in buckets:
+                buckets[key] = {
+                    "bucket": key,
+                    "ts": ts.timestamp() if ts else None,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "calls": 0,
+                    "by_type": defaultdict(
+                        lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+                    ),
+                }
+            ct = r[1]
+            if ct is None:
+                continue
+            p, c, t, n = int(r[2] or 0), int(r[3] or 0), int(r[4] or 0), int(r[5] or 0)
+            buckets[key]["prompt_tokens"] += p
+            buckets[key]["completion_tokens"] += c
+            buckets[key]["total_tokens"] += t
+            buckets[key]["calls"] += n
+            tg = buckets[key]["by_type"][ct]
+            tg["prompt_tokens"] += p
+            tg["completion_tokens"] += c
+            tg["total_tokens"] += t
+            tg["calls"] += n
+
+        result = []
+        for b in buckets.values():
+            b["by_type"] = dict(b["by_type"])
+            result.append(b)
+        return result
 
     # ---- 关闭连接 ----
 

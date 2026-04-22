@@ -15,6 +15,11 @@ const router = createRouter({
       name: 'feedback',
       component: () => import('@/views/FeedbackView.vue'),
     },
+    {
+      path: '/tokens',
+      name: 'tokens',
+      component: () => import('@/views/TokensView.vue'),
+    },
   ],
 })
 

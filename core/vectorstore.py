@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import List, Dict
 from openai import OpenAI
 
+from core.llm_stats import llm_stats
+
 
 class VectorStore:
     """
@@ -67,6 +69,19 @@ class VectorStore:
                         input=batch,
                     )
                     all_embeddings.extend([item.embedding for item in response.data])
+                    try:
+                        usage = getattr(response, "usage", None)
+                        if usage:
+                            llm_stats.record(
+                                model=self.embedding_model,
+                                prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                                completion_tokens=0,
+                                total_tokens=getattr(usage, "total_tokens", None),
+                                call_type="embedding",
+                                note=f"batch={len(batch)}",
+                            )
+                    except Exception:
+                        pass
                     if total_batches > 1:
                         print(f"    向量化进度: {current}/{total_batches} 批")
                     break
