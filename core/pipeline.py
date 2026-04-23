@@ -1,6 +1,26 @@
 """
 RAG 主流程 —— 串联文件读取、分块、向量化、BM25 索引、混合检索、大模型生成。
 全局单例模式：所有文件共用同一个知识库，对话历史持久化到 PostgreSQL。
+
+文件预处理流水线（add_file / add_file_with_progress）
+====================================================
+    ① 读取解析  FileReader.read(path)
+        - txt/md  → 多编码兜底 (utf-8 / gbk / utf-8-sig)
+        - pdf     → PyMuPDF 优先 → PyPDF2 兜底 → 扫描件回退 OCR
+        - docx    → python-docx (段落 + 表格)
+        - xlsx/xls→ openpyxl / xlrd (按 sheet 转 markdown 行)
+        - 图片    → PaddleOCR
+    ② 清洗去噪  TextCleaner.clean(text)
+        - Unicode NFKC 规范化、去控制字符 / 零宽 / BOM
+        - 剥离 HTML 标签、长串乱码、页眉页脚、重复行、纯标点行
+        - 空白合并、CJK 友好处理
+    ③ 切    块  TextChunker.chunk(text, source)
+        - API 文档 → 接口边界感知分块
+        - 普通文档 → 段落优先 + 滑动窗口 (chunk_size / overlap)
+    ④ 向 量 化  VectorStore.add(chunks)
+        - 阿里云 text-embedding-v3 (1024 维)，批量 10 条 + 重试
+    ⑤ 存 入 库  pgvector (USE_PG=True) 或 本地 numpy + json
+        - 同步重建 BM25 倒排索引 (jieba 分词)
 """
 
 import os
@@ -12,6 +32,7 @@ from openai import OpenAI
 
 from core.config import Config
 from core.reader import FileReader
+from core.cleaner import TextCleaner, CleanConfig
 from core.chunker import TextChunker
 from core.vectorstore import VectorStore
 from core.bm25 import BM25Index
@@ -47,6 +68,20 @@ class RAGPipeline:
             chunk_size=self.config.CHUNK_SIZE,
             chunk_overlap=self.config.CHUNK_OVERLAP,
         )
+        # 文本清洗器（无状态，可全局复用）—— 介于 reader 与 chunker 之间
+        # 从 Config 读取每条规则的开关，便于按文档类型微调
+        self.cleaner = TextCleaner(CleanConfig(
+            normalize_unicode  = getattr(self.config, "CLEAN_NORMALIZE_UNICODE", True),
+            strip_control      = getattr(self.config, "CLEAN_STRIP_CONTROL", True),
+            strip_html         = getattr(self.config, "CLEAN_STRIP_HTML", True),
+            drop_long_gibberish= getattr(self.config, "CLEAN_DROP_LONG_GIBBERISH", True),
+            drop_page_footer   = getattr(self.config, "CLEAN_DROP_PAGE_FOOTER", True),
+            drop_dup_lines     = getattr(self.config, "CLEAN_DROP_DUP_LINES", True),
+            drop_punct_only    = getattr(self.config, "CLEAN_DROP_PUNCT_ONLY", True),
+            collapse_whitespace= getattr(self.config, "CLEAN_COLLAPSE_WHITESPACE", True),
+            cjk_friendly       = getattr(self.config, "CLEAN_CJK_FRIENDLY", True),
+            dup_line_threshold = getattr(self.config, "CLEAN_DUP_LINE_THRESHOLD", 3),
+        ))
 
         if self._use_pg:
             from core.pg_vectorstore import PgVectorStore
@@ -95,34 +130,67 @@ class RAGPipeline:
     # ---- 知识库管理 ----
 
     def add_file(self, file_path: str):
-        """添加文件到知识库（全库共享）"""
-        print(f"\n📄 正在处理文件: {file_path}")
-        text = FileReader.read(file_path)
+        """
+        添加文件到知识库（全库共享）。
 
+        预处理流水线（5 步）：
+            ① 读取解析 → FileReader.read
+            ② 清洗去噪 → TextCleaner.clean
+            ③ 切块     → TextChunker.chunk
+            ④ 向量化   → VectorStore.add (内部调用 embedding API)
+            ⑤ 存库 + 重建 BM25 索引
+        """
+        print(f"\n📄 正在处理文件: {file_path}")
+
+        # ① 读取解析：根据扩展名自动选择 reader（含 OCR 回退）
+        text = FileReader.read(file_path)
         if not text.strip():
             print("  ⚠️ 文件内容为空，跳过。")
             return
 
         source_name = os.path.basename(file_path)
-        print(f"  文件内容长度: {len(text)} 字符")
+        raw_len = len(text)
+        print(f"  ① 读取完成: {raw_len} 字符")
 
+        # ② 清洗去噪：去控制字符 / HTML / 页眉页脚 / 重复行 / 空白合并 / CJK 友好
+        text, clean_report = self.cleaner.clean(text)
+        if not text.strip():
+            print("  ⚠️ 清洗后内容为空，跳过。")
+            return
+        print(f"  ② {clean_report.summary()}")
+
+        # ③ 切块：API 文档走边界感知分块；普通文档走滑动窗口分块
         chunks = self.chunker.chunk(text, source=source_name)
-        print(f"  分块完成: {len(chunks)} 个文本块")
-
+        print(f"  ③ 分块完成: {len(chunks)} 个文本块")
         self._chunk_viz_cache[source_name] = self.chunker.get_visualization_data(text, chunks)
 
+        # ④ 向量化 + ⑤ 存库（VectorStore.add 内部完成 embedding 调用与持久化）
         self.vector_store.add(chunks)
+        print(f"  ④ 向量化 & 入库完成")
 
+        # ⑤ 重建 BM25 倒排索引（基于全库 metadata）
         self.bm25_index.fit(self.vector_store.metadata)
         if self._use_pg:
             self.vector_store.save_bm25(self.bm25_index.to_dict())
         else:
             self.bm25_index.save(self.temp_dir)
+        print(f"  ⑤ BM25 索引重建完成")
 
     def add_file_with_progress(self, file_path: str, on_progress: Callable[[dict], None]):
-        """添加文件到知识库，通过回调同步上报进度（供 SSE 流使用）。"""
+        """
+        添加文件到知识库（SSE 进度版）。流水线与 add_file 相同，
+        但每一步都通过 on_progress 上报百分比，供前端进度条显示。
+
+        进度区间分配：
+            reading   :  5% → 15%
+            cleaning  : 15% → 20%
+            chunking  : 20% → 30%
+            embedding : 30% → 80%
+            indexing  : 88% → 100%
+        """
         source_name = os.path.basename(file_path)
 
+        # ① 读取
         on_progress({"type": "progress", "stage": "reading",
                      "message": "正在读取文件…", "percent": 5})
         text = FileReader.read(file_path)
@@ -135,15 +203,26 @@ class RAGPipeline:
         on_progress({"type": "progress", "stage": "reading",
                      "message": f"读取完成 ({len(text):,} 字符)", "percent": 15})
 
+        # ② 清洗去噪
+        on_progress({"type": "progress", "stage": "cleaning",
+                     "message": "正在清洗去噪…", "percent": 16})
+        text, clean_report = self.cleaner.clean(text)
+        if not text.strip():
+            on_progress({"type": "error",
+                         "message": f"清洗后内容为空：{source_name}"})
+            return
+        on_progress({"type": "progress", "stage": "cleaning",
+                     "message": clean_report.summary(), "percent": 20})
+
+        # ③ 切块
         on_progress({"type": "progress", "stage": "chunking",
-                     "message": "正在智能分块…", "percent": 20})
+                     "message": "正在智能分块…", "percent": 22})
         chunks = self.chunker.chunk(text, source=source_name)
         self._chunk_viz_cache[source_name] = self.chunker.get_visualization_data(text, chunks)
         on_progress({"type": "progress", "stage": "chunking",
                      "message": f"分块完成（{len(chunks)} 个文本块）", "percent": 30})
 
-        total_batches = max(1, (len(chunks) + 9) // 10)
-
+        # ④ 向量化（embedding 内部按 batch=10 循环回调）
         def embed_cb(current: int, total: int):
             pct = 30 + int(current / total * 50)
             on_progress({"type": "progress", "stage": "embedding",
@@ -153,6 +232,7 @@ class RAGPipeline:
                      "message": "开始向量化…", "percent": 32})
         self.vector_store.add(chunks, on_progress=embed_cb)
 
+        # ⑤ 重建 BM25 索引
         on_progress({"type": "progress", "stage": "indexing",
                      "message": "建立检索索引…", "percent": 88})
         self.bm25_index.fit(self.vector_store.metadata)

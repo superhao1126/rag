@@ -62,9 +62,9 @@ def _dump_ocr_output(source_path: Path, kind: str, pages: list[dict], full_text:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         # 同步打印到控制台，便于实时核查
-        print(f"\n===== [OCR] {kind} | {source_path.name} → {out_path} =====")
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        print(f"===== [OCR] end ({len(full_text)} chars) =====\n", flush=True)
+        # print(f"\n===== [OCR] {kind} | {source_path.name} → {out_path} =====")
+        # print(json.dumps(payload, ensure_ascii=False, indent=2))
+        # print(f"===== [OCR] end ({len(full_text)} chars) =====\n", flush=True)
     except Exception as e:
         warnings.warn(f"OCR 结果落盘失败: {e}", UserWarning)
 
