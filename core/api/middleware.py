@@ -64,6 +64,7 @@ class UnifiedResponseMiddleware(BaseHTTPMiddleware):
                 for k, v in response.headers.items()
                 if k.lower() not in ("content-length", "content-type")
             },
+            background=getattr(response, "background", None),
         )
 
 

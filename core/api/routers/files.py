@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from core.reader import FileReader
@@ -16,10 +17,62 @@ from ..deps import get_rag, require_pg
 
 router = APIRouter(prefix="/api", tags=["files"])
 
+logger = logging.getLogger(__name__)
 
-@router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """上传文件并向量化，通过 SSE 实时推送进度。"""
+
+def _process_file_silently(rag, file_path: str, filename: str) -> None:
+    """后台静默处理：清洗 → 分块 → 向量化 → 入库。
+
+    出错只记录日志，不影响前端（前端通过文件列表是否出现该文件来判断结果）。
+    """
+    try:
+        rag.add_file(file_path)
+        logger.info("[upload] 后台处理完成: %s", filename)
+    except Exception as exc:  # noqa: BLE001 — 后台任务必须吞异常防止崩溃
+        logger.exception("[upload] 后台处理失败: %s — %s", filename, exc)
+
+
+@router.post("/upload", status_code=202)
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """
+    上传文件 —— 仅做"接收 + 落盘"，处理流程（清洗/分块/向量化/入库）放到后台。
+
+    用户视角：HTTP 上传完成即视为"上传成功"。前端通过轮询 `/api/files` 列表
+    判断文件是否已处理完毕（处理完后会出现在列表中）。
+    """
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in FileReader.SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            400,
+            f"不支持的格式: {suffix}，支持: {', '.join(FileReader.SUPPORTED_EXTENSIONS)}",
+        )
+
+    rag = get_rag()
+    upload_dir = os.path.join(rag.temp_dir, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, file.filename)
+
+    # 同步把文件落盘 —— 这一步走完，HTTP 请求才会返回，前端进度条达到 100%
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    # 后台静默执行重活（清洗 / 分块 / 向量化 / 入库 / 重建 BM25）
+    background_tasks.add_task(_process_file_silently, rag, file_path, file.filename)
+
+    return {
+        "filename": file.filename,
+        "size": len(content),
+        "message": "上传成功，正在后台处理",
+    }
+
+
+@router.post("/upload/stream")
+async def upload_file_stream(file: UploadFile = File(...)):
+    """SSE 流式上传（保留旧接口兼容）—— 实时推送清洗/分块/向量化进度。
+
+    新前端使用 `/api/upload` 即可；本接口供需要观察细节的调试场景或外部脚本使用。
+    """
     suffix = Path(file.filename).suffix.lower()
     if suffix not in FileReader.SUPPORTED_EXTENSIONS:
         raise HTTPException(

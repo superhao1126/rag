@@ -38,7 +38,8 @@ http.interceptors.response.use(
   (response) => {
     const body = response.data;
     if (isUnified(body)) {
-      if (body.code === 200) {
+      // 接受全部 2xx 状态码（200 OK / 201 Created / 202 Accepted / 204 No Content …）
+      if (body.code >= 200 && body.code < 300) {
         response.data = body.data;
         return response;
       }

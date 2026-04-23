@@ -76,11 +76,15 @@ const keyword = ref("");
 interface UploadTask {
   id: string;
   filename: string;
-  status: "uploading" | "done" | "error";
-  percent: number;
+  status: "uploading" | "processing" | "done" | "error";
+  percent: number;            // 仅在 uploading 阶段使用（HTTP 上传进度）
   message: string;
 }
 const tasks = ref<UploadTask[]>([]);
+
+// 后台处理轮询：检测文件是否已出现在知识库
+const POLL_INTERVAL_MS = 2000;
+const POLL_MAX_ATTEMPTS = 60;   // 最长 ~2 分钟，超时仅提示而不报错
 
 const totalChunks = computed(() => files.value.reduce((s, f) => s + f.chunk_count, 0));
 
@@ -155,6 +159,32 @@ function formatChars(n: number | null): string {
   return n > 10000 ? (n / 10000).toFixed(1) + " 万字" : n + " 字";
 }
 
+async function waitForBackendProcessing(filename: string, task: UploadTask) {
+  // 后端清洗/分块/向量化是异步进行的，文件出现在 /files 列表 = 处理完成
+  for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    try {
+      const res = await api.getFiles({
+        page: 1,
+        page_size: 5,
+        keyword: filename,
+      });
+      const hit = res.data.files.find((f) => f.source === filename);
+      if (hit) {
+        task.status = "done";
+        task.percent = 100;
+        task.message = `完成 · ${hit.chunk_count} 块 · ${formatChars(hit.total_chars ?? 0)}`;
+        await loadFiles();
+        return;
+      }
+    } catch {
+      // 轮询失败忽略，继续下一次
+    }
+  }
+  // 长时间未出现：提示用户稍后刷新（不视为错误）
+  task.message = "已上传，处理时间较长，请稍后刷新查看";
+}
+
 async function uploadFile(file: File) {
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
   const ALLOWED = ["txt","md","pdf","docx","xlsx","xls","png","jpg","jpeg","bmp","tif","tiff","webp"];
@@ -168,37 +198,27 @@ async function uploadFile(file: File) {
     filename: file.name,
     status: "uploading",
     percent: 0,
-    message: "准备上传…",
+    message: "正在上传…",
   });
   tasks.value.push(task);
 
   try {
-    await api.uploadWithProgress(file, {
-      onProgress: (percent, message) => {
-        task.percent = percent || task.percent;
-        task.message = message || task.message;
-      },
-      onDone: async ({ chunk_count, total_chars }) => {
-        task.status = "done";
-        task.percent = 100;
-        task.message = `完成 · ${chunk_count} 块 · ${formatChars(total_chars)}`;
-        await loadFiles();
-      },
-      onError: (msg) => {
-        task.status = "error";
-        task.message = msg || "处理失败";
-      },
-    });
-    if (task.status === "uploading") {
-      task.status = "done";
-      task.percent = 100;
-      task.message = "完成";
-      await loadFiles();
-    }
+    // 1) HTTP 上传：返回即视为成功（后端已落盘）
+    await api.upload(file);
+
+    task.status = "processing";
+    task.percent = 100;
+    task.message = "上传完成，正在后台处理…";
+    toast.show(`${file.name} 上传成功`, "success");
+
+    // 2) 轮询：后台处理完毕后，文件会出现在知识库列表中
+    await waitForBackendProcessing(file.name, task);
   } catch (e: unknown) {
-    const err = e as { message?: string };
+    const err = e as { response?: { data?: { msg?: string; detail?: string } }; message?: string };
     task.status = "error";
-    task.message = err.message ?? "上传失败";
+    task.message =
+      err.response?.data?.msg ?? err.response?.data?.detail ?? err.message ?? "上传失败";
+    toast.show(task.message, "error");
   }
 }
 
@@ -363,7 +383,7 @@ onMounted(async () => {
             </a-list-item-meta>
             <template #actions>
               <a-button
-                v-if="t.status !== 'uploading'"
+                v-if="t.status === 'done' || t.status === 'error'"
                 type="text"
                 size="small"
                 @click="dismissTask(t.id)"
@@ -551,6 +571,9 @@ onMounted(async () => {
 }
 .task-item.uploading {
   border-left-color: #6366f1;
+}
+.task-item.processing {
+  border-left-color: #f59e0b;
 }
 .task-item.done {
   border-left-color: #10b981;

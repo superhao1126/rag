@@ -16,27 +16,32 @@ export interface UploadStreamHandlers {
 }
 
 export const filesApi = {
+  /**
+   * 上传文件 —— "上传即完成"模式。
+   * HTTP 请求返回即视为成功；后端会异步执行 清洗/分块/向量化/入库。
+   * 前端通过轮询 `getFiles` 检测文件是否真正进入知识库。
+   */
   upload: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return http.post("/upload", form);
+    return http.post<{ filename: string; size: number; message: string }>("/upload", form);
   },
 
-  /** SSE 流式上传 — 暴露原生 Response（保留作底层入口） */
+  /** SSE 流式上传 — 暴露原生 Response（保留作底层入口/调试用） */
   uploadStream: (file: File): Promise<Response> => {
     const form = new FormData();
     form.append("file", file);
-    return fetch("/api/upload", { method: "POST", body: form });
+    return fetch("/api/upload/stream", { method: "POST", body: form });
   },
 
   /**
-   * 高层封装：上传文件并按事件类型回调，自动解析 SSE。
-   * 推荐组件使用本方法，避免重复写流读取/JSON 解析样板代码。
+   * 高层封装：SSE 实时进度版（保留兼容）。
+   * 新页面建议使用 `upload` + 轮询，体验更接近"传统上传"。
    */
   uploadWithProgress: async (file: File, handlers: UploadStreamHandlers = {}) => {
     const form = new FormData();
     form.append("file", file);
-    const resp = await fetch("/api/upload", { method: "POST", body: form });
+    const resp = await fetch("/api/upload/stream", { method: "POST", body: form });
     await consumeSSE<UploadEvent>(resp, {
       onEvent: async (evt) => {
         if (evt.type === "progress") {
