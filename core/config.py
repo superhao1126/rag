@@ -1,6 +1,41 @@
 """全局配置"""
 
 import os
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.is_file():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+_load_dotenv()
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class Config:
@@ -27,17 +62,17 @@ class Config:
 
     # ---- PostgreSQL 数据库（向量持久化存储）----
     # 设为 True 则使用 PostgreSQL + pgvector 存储向量，False 则使用本地 numpy 文件
-    USE_PG = True
+    USE_PG = _env_flag("USE_PG", False)
 
     # 完整连接 URI（如设置此项，将忽略下方独立配置）
     # 格式: postgresql://user:password@host:port/dbname
-    PG_URI = os.getenv("PG_URI", "")
+    PG_URI = os.getenv("PG_URI", "").strip()
 
-    PG_HOST = os.getenv("PG_HOST", "101.43.38.7")          # 数据库主机地址
+    PG_HOST = os.getenv("PG_HOST", "127.0.0.1").strip()   # 数据库主机地址
     PG_PORT = int(os.getenv("PG_PORT", "5432"))           # 数据库端口
-    PG_DATABASE = os.getenv("PG_DATABASE", "rag_db")            # 数据库名称（请填写）
-    PG_USER = os.getenv("PG_USER", "rag_user")                    # 数据库用户名（请填写）
-    PG_PASSWORD = os.getenv("PG_PASSWORD", "rag_123456")            # 数据库密码（请填写）
+    PG_DATABASE = os.getenv("PG_DATABASE", "").strip()    # 数据库名称
+    PG_USER = os.getenv("PG_USER", "").strip()            # 数据库用户名
+    PG_PASSWORD = os.getenv("PG_PASSWORD", "").strip()    # 数据库密码
 
     @property
     def PG_CONFIG(self) -> dict:
@@ -50,8 +85,20 @@ class Config:
             "password": self.PG_PASSWORD,
         }
 
+    @property
+    def PG_READY(self) -> bool:
+        """是否已提供完整的 PostgreSQL 连接信息"""
+        if self.PG_URI:
+            return True
+        return all([
+            self.PG_HOST,
+            self.PG_DATABASE,
+            self.PG_USER,
+            self.PG_PASSWORD,
+        ])
+
     # ---- OCR（扫描件 PDF / 图片识别）----
-    OCR_ENABLED = True              # 是否启用 PaddleOCR（依赖未安装时自动跳过）
+    OCR_ENABLED = _env_flag("OCR_ENABLED", True)  # 是否启用 PaddleOCR（依赖未安装时自动跳过）
     OCR_LANG = "ch"                 # 识别语言：ch / en / japan / korean ...
     OCR_CONF_THRESHOLD = 0.6        # 置信度过滤阈值，低于此值的识别行将被丢弃
     OCR_PDF_RENDER_ZOOM = 2.0       # 扫描件 PDF 栅格化倍率（值越大越清晰但越慢）

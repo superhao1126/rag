@@ -84,6 +84,12 @@ class RAGPipeline:
         ))
 
         if self._use_pg:
+            if not self.config.PG_READY:
+                raise ValueError(
+                    "USE_PG=True 时，必须通过环境变量提供 PG_URI，或完整设置 "
+                    "PG_HOST/PG_PORT/PG_DATABASE/PG_USER/PG_PASSWORD。\n"
+                    "可参考仓库根目录 .env.example；若只想本地体验，可将 USE_PG=false。"
+                )
             from core.pg_vectorstore import PgVectorStore
             self.vector_store = PgVectorStore(
                 client=self.client,
@@ -101,6 +107,7 @@ class RAGPipeline:
                 storage_dir=self.temp_dir,
                 embedding_model=self.config.EMBEDDING_MODEL,
             )
+            print(f"💾 向量存储: 本地 numpy ({self.temp_dir})")
 
         self.bm25_index = BM25Index()
 

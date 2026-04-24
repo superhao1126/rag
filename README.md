@@ -1,251 +1,423 @@
-# 📚 RAG 知识问答系统
+# RAG 知识问答系统
 
-基于阿里云百炼大模型（qwen-plus）的 **检索增强生成（RAG）** 知识问答系统。  
-支持上传本地文件，自动分块、向量化、BM25 索引，通过混合检索 + 大模型生成高质量回答。  
-前端采用 Vue 3 + Ant Design Vue，后端 FastAPI + PostgreSQL + pgvector。
+> 本 README 是项目唯一文档入口，包含架构、目录、依赖、启动、数据库、前端、接口与维护说明。
+
+基于 **FastAPI + Vue 3 + PostgreSQL/pgvector + 阿里云百炼** 的 RAG 项目，覆盖：
+
+1. 文件上传与解析
+2. 文本清洗与切块
+3. 向量化入库与 BM25 检索
+4. 混合检索问答与对话持久化
+5. 文件管理、反馈分析、Token 统计
 
 ---
 
-## 🏗️ 项目结构
+## 1. 技术栈
 
+### 后端
+
+| 类别 | 选型 | 说明 |
+| --- | --- | --- |
+| 语言 / 运行时 | Python 3.10.20 | Paddle / pgvector 组合建议固定 3.10 |
+| Web 框架 | FastAPI + Uvicorn | 异步接口、自动 OpenAPI |
+| LLM / Embedding | 阿里云百炼（OpenAI 兼容） | `qwen3.6-plus`、`text-embedding-v4` |
+| 向量库 | PostgreSQL + pgvector | 持久化切块、向量、会话、统计 |
+| 检索 | jieba + 自实现 BM25 + RRF | 中文分词、混合检索 |
+| 文档解析 | PyMuPDF / PyPDF2 / python-docx / openpyxl / xlrd | 多格式读取 |
+| OCR | PaddleOCR + opencv-python | 扫描件 / 图片识别 |
+| 数据库驱动 | psycopg2-binary | 当前为同步驱动 |
+
+### 前端
+
+| 类别 | 选型 | 说明 |
+| --- | --- | --- |
+| 运行时 | Node.js 24 | 前端命令前先执行 `fnm use 24` |
+| 包管理 | pnpm 10.30+ | 不要混用 npm / yarn |
+| 框架 | Vue 3 + `<script setup>` | 单页应用 |
+| 构建 | Vite 8 | 开发 / 构建 / 预览 |
+| 语言 | TypeScript 6 + vue-tsc | 严格类型 |
+| UI | Ant Design Vue 4 | 表格、表单、弹窗 |
+| 状态 | Pinia 3 | 会话状态管理 |
+| 路由 | vue-router 5 | hash 模式 |
+| 数据请求 | axios + SSE | 普通接口 + 流式问答 / 上传 |
+| 图表 | ECharts 5 | 反馈趋势、Token 趋势 |
+| Markdown | marked + highlight.js | 回答渲染、代码高亮 |
+
+---
+
+## 2. 目录与文件用途
+
+### 根目录
+
+| 路径 | 用途 |
+| --- | --- |
+| `README.md` | 当前总入口文档 |
+| `server.py` | FastAPI 入口：中间件、路由、静态资源、SPA fallback |
+| `main.py` | CLI 入口：批量导入、直接提问、交互问答 |
+| `core/` | 后端核心模块 |
+| `frontend/` | Vue 3 前端工程 |
+| `init_db.sql` | PostgreSQL 初始化脚本 |
+| `requirements.txt` | Python 依赖 |
+| `.env.example` | 环境变量模板 |
+| `testOcr.py` | OCR 调试脚本 |
+| `output/` | CLI 输出目录 |
+
+### `core/`
+
+| 路径 | 用途 |
+| --- | --- |
+| `core/config.py` | 全局配置：模型、检索、OCR、数据库、清洗开关 |
+| `core/pipeline.py` | RAG 总编排层 |
+| `core/reader.py` | 多格式文件读取 |
+| `core/cleaner.py` | 7 步文本清洗流水线 |
+| `core/chunker.py` | 切块：API 边界感知 + 滑动窗口 |
+| `core/vectorstore.py` | 本地 numpy 存储 fallback |
+| `core/pg_vectorstore.py` | PostgreSQL + pgvector 存储与检索 |
+| `core/bm25.py` | BM25 稀疏检索缓存 |
+| `core/retriever.py` | 向量 + BM25 融合检索 |
+| `core/ocr.py` | PaddleOCR 封装 |
+| `core/llm_stats.py` | LLM / embedding 调用统计 |
+
+### `core/api/routers/`
+
+| 路径 | 用途 |
+| --- | --- |
+| `files.py` | 上传、文件列表、删除、分块预览 |
+| `query.py` | SSE 流式问答 |
+| `conversations.py` | 会话列表、详情、重命名、删除 |
+| `feedback.py` | 点赞/点踩/原因与趋势统计 |
+| `misc.py` | 健康检查、Token 统计、趋势、分块查询 |
+
+### `frontend/src/`
+
+| 路径 | 用途 |
+| --- | --- |
+| `views/ChatView.vue` | 主对话页 |
+| `views/DbFilesView.vue` | 文件管理页 |
+| `views/FeedbackView.vue` | 反馈分析页 |
+| `views/TokensView.vue` | Token 统计页 |
+| `api/` | 后端接口与 SSE 封装 |
+| `components/` | 头部、分块弹窗、图表等组件 |
+| `stores/session.ts` | Pinia 会话状态 |
+
+---
+
+## 3. 核心数据流
+
+```text
+用户上传文件
+    ↓ POST /api/upload
+[1] reader.read()             读取解析（PyMuPDF → OCR fallback）
+[2] cleaner.clean()           清洗去噪（控制字符 / HTML / 页眉页脚 / CJK 空格）
+[3] chunker.chunk()           切块（chunk_size=300, overlap=60）
+[4] vector_store.add()        embedding → 1024 维向量
+[5] pg_vectorstore.add_chunks 写入 rag_chunks + 刷新 BM25 缓存
+
+用户提问
+    ↓ POST /api/query
+[A] embed(query)              问题向量化
+[B] retriever.search()        向量 + BM25 + RRF 融合
+[C] prompt + history          组装上下文
+[D] LLM stream                SSE 流式返回
+[E] messages / llm_calls      对话与统计落库
 ```
-rag/
-├── core/                    # 核心模块包
-│   ├── __init__.py          # 包入口
-│   ├── config.py            # 全局配置（模型、分块参数、检索权重、数据库等）
-│   ├── reader.py            # 文件读取器（txt / md / pdf，PyMuPDF + PyPDF2 双引擎）
-│   ├── chunker.py           # 智能文本分块（API 边界感知 + 滑动窗口）
-│   ├── vectorstore.py       # 向量存储 — 本地模式（numpy）
-│   ├── pg_vectorstore.py    # 向量存储 — PostgreSQL 模式（pgvector）
-│   ├── bm25.py              # BM25 稀疏检索（jieba 中文分词）
-│   ├── retriever.py         # 混合检索器（RRF 倒数排名融合 + 查询扩展）
-│   └── pipeline.py          # RAG 主流程（串联所有组件，对话管理，SSE 进度）
-├── frontend/                # Vue 3 前端
-│   ├── src/
-│   │   ├── views/
-│   │   │   ├── ChatView.vue      # 对话页（流式输出、代码高亮、停止生成）
-│   │   │   └── DbFilesView.vue   # 文件管理页（SSE 上传进度、卡片视图）
-│   │   ├── api.ts                # API 封装（axios + fetch SSE）
-│   │   └── stores/session.ts     # Pinia 状态管理
-│   └── dist/                # 构建产物（server.py 静态托管）
-├── main.py                  # CLI 命令行入口
-├── server.py                # Web API 服务（FastAPI + SSE）
-├── init_db.sql              # PostgreSQL 建表参考脚本（程序会自动建表）
-├── requirements.txt         # Python 依赖
-└── 项目说明.md               # 本文件
-```
 
 ---
 
-## ✨ 功能特性
+## 4. 依赖清单
 
-| 功能 | 说明 |
-|------|------|
-| 📄 多格式文件读取 | 支持 `.txt`、`.md`、`.pdf`；PDF 使用 PyMuPDF 优先，自动回退 PyPDF2 |
-| ✂️ 智能文本分块 | API 边界感知分块（检测 URL / HTTP 方法），普通文档滑动窗口分块 |
-| 🧮 向量化存储 | 阿里云 `text-embedding-v3`（1024 维），支持本地 numpy 或 PostgreSQL + pgvector |
-| 🔍 混合检索 | BM25 关键词 + 语义向量，RRF 倒数排名融合；支持 URL / camelCase 查询扩展 |
-| 🤖 大模型问答 | 阿里云 `qwen-plus`，流式 SSE 输出，多轮对话记忆 |
-| 📈 SSE 上传进度 | 文件上传时实时推送进度（读取→分块→向量化→索引），前端显示进度条 |
-| ⏹ 停止生成 | 流式输出中可随时中止，保留已接收内容 |
-| 🏷️ AI 标题命名 | 第一条消息后用 LLM 自动生成对话标题（≤15 字），实时更新侧边栏 |
-| 🔗 检索来源跳转 | 点击检索来源文件名直接跳转文件管理页并高亮对应卡片 |
-| 💻 代码高亮 | 使用 highlight.js（atom-one-dark 主题），支持一键复制代码块 |
-| 🗄️ 文件管理页 | 卡片式文件列表，支持拖拽上传和删除 |
+### Python 依赖
+
+| 依赖 | 用途 |
+| --- | --- |
+| `openai` | 阿里云百炼 OpenAI 兼容调用 |
+| `numpy` | 本地向量计算与 fallback 存储 |
+| `PyPDF2` / `pymupdf` | PDF 解析 |
+| `python-docx` | Word 解析 |
+| `openpyxl` / `xlrd` | Excel 解析 |
+| `jieba` | 中文分词 |
+| `fastapi` / `uvicorn` | Web 服务 |
+| `python-multipart` | 文件上传 |
+| `psycopg2-binary` / `pgvector` | PostgreSQL 与向量支持 |
+| `opencv-python` / `paddlepaddle` / `paddleocr` | OCR |
+| `pytest` / `httpx` | 测试与 API 冒烟 |
+
+### 前端依赖
+
+| 依赖 | 用途 |
+| --- | --- |
+| `vue` / `vue-router` / `pinia` | 应用框架、路由、状态 |
+| `axios` | HTTP 请求 |
+| `ant-design-vue` / `@ant-design/icons-vue` | UI 与图标 |
+| `echarts` | 图表 |
+| `marked` / `highlight.js` | Markdown 渲染与代码高亮 |
+| `vite` / `typescript` / `vue-tsc` | 构建与类型检查 |
+| `eslint` / `oxlint` / `oxfmt` | 代码质量工具 |
 
 ---
 
-## 🔧 环境要求
+## 5. 快速开始
 
-- **Python**：3.10+
-- **Node.js**：18+（仅需要修改前端时）
-- **阿里云百炼 API Key**：[获取地址](https://bailian.console.aliyun.com/)
-- **PostgreSQL**（可选）：12+，需安装 [pgvector 扩展](https://github.com/pgvector/pgvector)
-
----
-
-## 🚀 快速开始
-
-### 1. 安装依赖
+### 5.1 后端
 
 ```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-依赖清单：
-
-| 包 | 用途 |
-|----|------|
-| `openai` | OpenAI 兼容 API 客户端（阿里云百炼） |
-| `numpy` | 本地向量计算 |
-| `PyPDF2` | PDF 解析（回退引擎） |
-| `pymupdf` | PDF 解析（主引擎，中文 PDF 更可靠） |
-| `jieba` | 中文分词（BM25 用） |
-| `fastapi` + `uvicorn` | Web 服务框架 |
-| `python-multipart` | 文件上传支持 |
-| `psycopg2-binary` | PostgreSQL 驱动 |
-| `pgvector` | pgvector 扩展 Python 适配器 |
-
-### 2. 配置 API Key
+### 5.2 前端
 
 ```bash
-export DASHSCOPE_API_KEY="你的百炼API Key"
+fnm use 24
+cd frontend
+pnpm install
 ```
 
-### 3. 配置数据库（必须）
-
-编辑 `core/config.py`，填写 PostgreSQL 连接信息：
-
-```python
-USE_PG = True
-PG_HOST = "localhost"          # 数据库主机
-PG_PORT = 5432                 # 端口
-PG_DATABASE = "rag_db"         # 数据库名
-PG_USER = "your_user"          # 用户名
-PG_PASSWORD = "your_password"  # 密码
-```
-
-或使用环境变量：
+### 5.3 环境变量
 
 ```bash
-export PG_HOST=localhost
+cp .env.example .env
+```
+
+项目会在启动时**自动读取仓库根目录 `.env`**；如果部署环境已有同名环境变量，则以外部环境变量为准。
+
+最少配置示例：
+
+```bash
+export DASHSCOPE_API_KEY="sk-xxxx"
+
+# PostgreSQL 模式（二选一）
+export USE_PG=true
+export PG_HOST=127.0.0.1
 export PG_PORT=5432
 export PG_DATABASE=rag_db
-export PG_USER=your_user
-export PG_PASSWORD=your_password
-# 或用完整 URI
-export PG_URI="postgresql://user:password@localhost:5432/rag_db"
+export PG_USER=rag_user
+export PG_PASSWORD="change_me"
+
+# 或直接提供连接串
+export PG_URI="postgresql://rag_user:change_me@127.0.0.1:5432/rag_db"
+
+# 可选
+export PORT=8000
 ```
 
-> 程序启动时会自动创建所需的数据库表和索引（需要有 CREATE TABLE 权限，且数据库中已启用 pgvector 扩展 `CREATE EXTENSION vector`）。也可参考 `init_db.sql` 手动初始化。
-
-### 4. 启动服务
+默认是本地模式；如果只想显式指定本地模式：
 
 ```bash
+export USE_PG=false
+```
+
+### 5.4 初始化数据库
+
+```bash
+psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DATABASE" -f init_db.sql
+```
+
+### 5.5 启动
+
+```bash
+# Web
 python server.py
+
+# CLI
+python main.py --files doc1.pdf --interactive
+python main.py --dir ./documents -q "主要内容是什么？"
 ```
 
-启动后访问 **http://localhost:8000** 即可使用 Web 界面。
+访问：
+
+- Web：<http://localhost:8000>
+- Swagger：<http://localhost:8000/docs>
 
 ---
 
-## 💻 使用 PyCharm 启动
+## 6. API 速览
 
-### 步骤一：打开项目
+| Method | Path | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/upload` | 快速上传，返回 202 后后台处理 |
+| `POST` | `/api/upload/stream` | SSE 上传进度 |
+| `GET` | `/api/files` | 已索引文件列表 |
+| `DELETE` | `/api/files/{id}` | 删除文件 |
+| `GET` | `/api/chunks` | 分块预览 |
+| `POST` | `/api/query` | SSE 流式问答 |
+| `GET` | `/api/conversations` | 会话列表 |
+| `GET` | `/api/conversations/{id}` | 会话详情 |
+| `POST` | `/api/feedback` | 反馈提交 |
+| `GET` | `/api/feedback` | 反馈聚合 |
+| `GET` | `/api/llm/stats` | Token 聚合 |
+| `GET` | `/api/llm/calls` | LLM 调用流水 |
+| `GET` | `/api/llm/trend` | Token 趋势 |
 
-1. 打开 PyCharm → **File → Open** → 选择 `rag/` 目录
+统一响应格式为：
 
-### 步骤二：配置 Python 解释器
-
-1. **File → Settings → Project: rag → Python Interpreter**
-2. 选择 Python 3.10+ 解释器，点击 **OK**
-
-### 步骤三：安装依赖
-
-在 PyCharm Terminal 执行：
-
-```bash
-pip install -r requirements.txt
+```json
+{ "code": 200, "message": "ok", "data": {} }
 ```
 
-### 步骤四：添加运行配置
-
-**Run → Edit Configurations → + → Python**，配置如下：
-
-| 配置项 | 值 |
-|--------|----|
-| Name | `RAG Web Server` |
-| Script path | 选择 `server.py` |
-| Environment variables | `DASHSCOPE_API_KEY=你的Key;PG_HOST=localhost;PG_PORT=5432;PG_DATABASE=rag_db;PG_USER=xxx;PG_PASSWORD=xxx` |
-| Working directory | 项目根目录（`rag/`） |
-
-点击 **Apply → OK**，然后点击绿色 ▶️ 运行。
+前端拦截器按 **2xx** 范围判断成功。
 
 ---
 
-## 🌐 Web 界面使用说明
+## 7. 前端页面与交互
 
-### 文件管理页（`/files`）
+### ChatView
 
-1. **上传文件**：拖拽或点击上传区，支持 `.txt` `.md` `.pdf`
-2. **实时进度**：上传后显示任务卡片，实时展示读取→分块→向量化→索引进度百分比
-3. **文件卡片**：显示文件名、文本块数、字符数、上传时间
-4. **删除文件**：点击文件卡片右上角 🗑 图标删除文件及其向量数据
+- 左侧会话列表，右侧流式消息区
+- 支持点赞/点踩、引用 chunk 预览
+- Markdown + 代码高亮
 
-### 对话页（`/`）
+### DbFilesView
 
-1. **新建对话**：左侧边栏点击 **+ 新对话**
-2. **提问**：输入框输入问题，回车或点击发送；`Shift+Enter` 换行
-3. **停止生成**：流式输出中点击红色 **⏹ 停止** 按钮，保留已接收内容
-4. **检索模式**：输入框左侧切换 **混合 / 向量 / BM25**
-   - **混合**（默认）：向量语义 + BM25 关键词，RRF 融合，效果最佳
-   - **向量**：纯语义相似度
-   - **BM25**：纯关键词匹配
-5. **检索来源**：每条 AI 回复下方可展开检索片段列表，点击文件名跳转文件管理页并高亮对应文件
-6. **代码块**：AI 回复中的代码块支持语法高亮 + 一键复制
-7. **AI 标题**：第一次提问后，LLM 自动为对话生成简洁标题（≤15 字）
+- 上传后立即进入 `processing`
+- 每 2 秒轮询 `/api/files` 判断后台处理完成
+- 支持删除、分块预览
 
----
+### FeedbackView
 
-## ⚙️ 核心参数说明
+- 满意度卡片
+- 点赞/点踩趋势图
+- 原因分布和明细列表
 
-编辑 `core/config.py` 调整以下参数：
+### TokensView
 
-| 参数 | 当前值 | 说明 |
-|------|--------|------|
-| `CHUNK_SIZE` | 300 | 文本块最大字符数（API 文档建议 200-400） |
-| `CHUNK_OVERLAP` | 60 | 相邻块重叠字符数 |
-| `TOP_K` | 5 | 检索返回片段数 |
-| `VECTOR_WEIGHT` | 0.6 | 混合检索向量权重 |
-| `BM25_WEIGHT` | 0.4 | 混合检索 BM25 权重 |
-| `RRF_K` | 60 | RRF 融合常数 |
-| `HISTORY_TURNS` | 5 | 对话历史保留轮数（0 = 不记忆） |
-| `LLM_MODEL` | qwen-plus | 大语言模型名称 |
-| `EMBEDDING_MODEL` | text-embedding-v3 | 向量化模型 |
-| `EMBEDDING_DIMENSION` | 1024 | 向量维度 |
-| `USE_PG` | True | 是否启用 PostgreSQL |
-| `PG_HOST` | localhost | 数据库主机 |
-| `PG_PORT` | 5432 | 数据库端口 |
-| `PG_DATABASE` | （空） | 数据库名 |
-| `PG_USER` | （空） | 数据库用户名 |
-| `PG_PASSWORD` | （空） | 数据库密码 |
-| `PG_URI` | （空） | 完整连接 URI（优先级高于分项配置） |
+- 输入 / 输出 / 合计 / 调用次数统计
+- 按模型、按调用类型聚合
+- 趋势图与分页流水
 
 ---
 
-## 🔑 API 接口一览
+## 8. 数据库设计
 
-启动后访问 **http://localhost:8000/docs** 查看 Swagger 文档。
+### 8.1 表结构总览
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/upload` | 上传文件并向量化（SSE 流式进度） |
-| `GET` | `/api/files` | 列出知识库所有文件 |
-| `DELETE` | `/api/files/{source}` | 删除指定文件及其向量数据 |
-| `GET` | `/api/conversations` | 获取所有对话列表 |
-| `POST` | `/api/conversations` | 创建新对话 |
-| `GET` | `/api/conversations/{id}` | 获取指定对话消息历史 |
-| `DELETE` | `/api/conversations/{id}` | 删除对话 |
-| `POST` | `/api/query` | 提问（SSE 流式返回，含检索结果和标题） |
-| `GET` | `/api/stats` | 获取知识库统计信息 |
-| `GET` | `/api/chunks` | 获取分块可视化数据 |
+| 表名 | 用途 |
+| --- | --- |
+| `rag_chunks` | 文本块 + `vector(1024)`，检索主表 |
+| `rag_bm25_cache` | BM25 倒排缓存 |
+| `rag_conversations` | 会话元信息 |
+| `rag_messages` | 对话消息与检索引用 |
+| `rag_llm_calls` | LLM / embedding 调用流水 |
+
+### 8.2 关键点
+
+1. `embedding` 维度必须与 `Config.EMBEDDING_DIMENSION` 一致
+2. `rag_chunks` 当前按 `source` 聚合为“文件”
+3. `rag_messages` 通过 `conversation_id` 关联 `rag_conversations`
+4. `rag_llm_calls` 用于趋势和模型聚合统计
+
+### 8.3 常用 SQL
+
+#### 已索引文件列表
+
+```sql
+SELECT
+    MD5(source) AS id,
+    source,
+    COUNT(*) AS chunk_count,
+    SUM(char_count) AS total_chars,
+    MIN(created_at) AS uploaded_at
+FROM rag_chunks
+WHERE session_id = 'global'
+GROUP BY source
+ORDER BY uploaded_at DESC;
+```
+
+#### 向量近似检索
+
+```sql
+SELECT id, source, chunk_index,
+       1 - (embedding <=> :query_vector) AS cosine_sim,
+       text
+FROM rag_chunks
+WHERE session_id = 'global'
+ORDER BY embedding <=> :query_vector
+LIMIT 5;
+```
+
+#### Token 用量趋势
+
+```sql
+SELECT
+    DATE_TRUNC('day', ts) AS day,
+    call_type,
+    SUM(prompt_tokens) AS prompt,
+    SUM(completion_tokens) AS completion,
+    SUM(total_tokens) AS total,
+    COUNT(*) AS calls
+FROM rag_llm_calls
+WHERE ts >= NOW() - INTERVAL '30 days'
+GROUP BY day, call_type
+ORDER BY day, call_type;
+```
 
 ---
 
-## 📁 数据存储
+## 9. 配置与注意事项
 
-### PostgreSQL 模式（`USE_PG = True`，推荐）
+### 配置原则
 
-| 表名 | 内容 |
-|------|------|
-| `rag_chunks` | 文本块 + 向量（pgvector） |
-| `rag_bm25_cache` | BM25 索引缓存 |
-| `rag_conversations` | 对话记录 |
-| `rag_messages` | 消息历史 |
+1. **不再内置默认数据库凭据**
+2. 默认 `USE_PG=false`，未配置数据库也可直接启动
+3. `USE_PG=true` 时，必须提供 `PG_URI` 或完整 `PG_*`
 
-上传的原始文件暂存于临时目录 `/tmp/rag_session_*/uploads/`。
+### 注意事项
 
-### 本地模式（`USE_PG = False`）
+- `BackgroundTasks` 依赖 `Response.background`，自定义中间件不能丢
+- `UnifiedResponseMiddleware` 会把原 HTTP 状态写进 body 的 `code`
+- `paddleocr` 体积较大，CI / 离线环境建议关闭 OCR
+- `EMBEDDING_DIMENSION` 变更时，需同步数据库 `vector(N)`
+- `CORS` 当前为 `*`，上线必须收紧
+- 前端命令前请先执行 `fnm use 24`
 
-所有数据保存在 `/tmp/rag_session_*/`：`vectors.npy` + `metadata.json` + `bm25_index.json`。
+---
 
+## 10. 调试速查
+
+| 现象 | 排查方向 |
+| --- | --- |
+| 上传 202 但前端报错 | 检查前端是否接受 2xx 范围 |
+| 后台任务不执行 | 检查中间件是否丢失 `response.background` |
+| 检索召回为空 | 看 `rag_chunks` 是否有数据，BM25 缓存是否刷新 |
+| OCR ImportError | 关闭 `OCR_ENABLED` 或补装 OCR 依赖 |
+| pgvector 维度不匹配 | 检查模型维度与 `vector(N)` |
+| 前端 lint 报 engine/lifecycle | 确认已 `fnm use 24` 且使用 pnpm |
+
+---
+
+## 11. 质量保障
+
+### 后端
+
+- `pytest`
+- 纯函数测试：cleaner / chunker / retriever
+- API 冒烟：统一响应与基础错误路径
+
+### 前端
+
+- `pnpm run type-check`
+- `pnpm run lint`
+- `pnpm run build`
+
+### CI
+
+- GitHub Actions：`.github/workflows/ci.yml`
+- 后端与前端分作业执行
+
+---
+
+## 12. 改进建议
+
+### 高优先级
+
+1. 把 OCR 拆成可选安装，降低首次部署成本
+2. 引入异步数据库驱动或任务队列，减轻同步 IO 阻塞
+3. 完善多知识库隔离（如 `kb_id`）
+4. 为检索链路增加 rerank 或质量评估
+
+### 产品体验
+
+1. ChatView 可加虚拟列表，提升长会话性能
+2. 上传可进一步演进为真正队列式异步任务
+3. 可以考虑补 i18n 与更细的错误码映射
