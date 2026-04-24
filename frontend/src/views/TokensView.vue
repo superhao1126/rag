@@ -5,6 +5,8 @@ import type { LlmCallEntry, LlmStats, LlmTrendPoint } from "@/api";
 import { useAppStore } from "@/stores/session";
 import { ReloadOutlined, ClearOutlined } from "@ant-design/icons-vue";
 import { message as antMessage, Modal } from "ant-design-vue";
+import EChart from "@/components/EChart.vue";
+import type { EChartsOption } from "echarts";
 
 const store = useAppStore();
 
@@ -106,42 +108,6 @@ const rangeOptions = computed(() =>
     ],
 );
 
-const trendMax = computed(() => {
-  let m = 1;
-  const arr = Array.isArray(trendData.value) ? trendData.value : [];
-  for (const p of arr) {
-    const s = bucketSegments(p);
-    m = Math.max(m, s.chatPrompt + s.chatCompletion, s.embedding);
-  }
-  return m;
-});
-
-const embeddingPolyline = computed(() => {
-  const arr = Array.isArray(trendData.value) ? trendData.value : [];
-  const n = arr.length;
-  if (n === 0) return "";
-  const max = trendMax.value;
-  return arr
-    .map((p, i) => {
-      const x = n === 1 ? 50 : ((i + 0.5) / n) * 100;
-      const y = 100 - (bucketSegments(p).embedding / max) * 100;
-      return `${x.toFixed(3)},${y.toFixed(3)}`;
-    })
-    .join(" ");
-});
-
-const embeddingPoints = computed(() => {
-  const arr = Array.isArray(trendData.value) ? trendData.value : [];
-  const n = arr.length;
-  if (n === 0) return [];
-  const max = trendMax.value;
-  return arr.map((p, i) => ({
-    x: n === 1 ? 50 : ((i + 0.5) / n) * 100,
-    y: 100 - (bucketSegments(p).embedding / max) * 100,
-    value: bucketSegments(p).embedding,
-  }));
-});
-
 function bucketSegments(p: LlmTrendPoint) {
   const bt = p.by_type || {};
   const chatPrompt = (bt.chat?.prompt_tokens || 0) + (bt.title?.prompt_tokens || 0);
@@ -199,12 +165,101 @@ function fmtBucket(p: LlmTrendPoint): string {
     : `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function fmtBucketShort(p: LlmTrendPoint): string {
-  if (!p.ts) return "";
-  const d = new Date(p.ts * 1000);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return trendBucket.value === "hour" ? `${pad(d.getHours())}h` : `${d.getMonth() + 1}/${d.getDate()}`;
-}
+// ---- ECharts 配置：堆叠柱(对话输入/输出) + 折线(向量化) ----
+const trendOption = computed<EChartsOption>(() => {
+  const arr = Array.isArray(trendData.value) ? trendData.value : [];
+  const isDark = document.documentElement.dataset.theme === "dark";
+  const axisColor = isDark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.55)";
+  const splitColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+
+  const xLabels = arr.map((p) => fmtBucket(p));
+  const chatPrompt = arr.map((p) => bucketSegments(p).chatPrompt);
+  const chatCompletion = arr.map((p) => bucketSegments(p).chatCompletion);
+  const embedding = arr.map((p) => bucketSegments(p).embedding);
+  const calls = arr.map((p) => p.calls);
+  const totals = arr.map((p) => p.total_tokens);
+
+  return {
+    grid: { left: 50, right: 30, top: 30, bottom: 40, containLabel: true },
+    legend: {
+      data: ["对话输入", "对话输出", "向量化"],
+      textStyle: { color: axisColor },
+      top: 0,
+      right: 0,
+    },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: unknown) => {
+        const list = params as Array<{ axisValue: string; dataIndex: number }>;
+        if (!list?.length) return "";
+        const idx = list[0]!.dataIndex;
+        const cp = chatPrompt[idx] ?? 0;
+        const cc = chatCompletion[idx] ?? 0;
+        const em = embedding[idx] ?? 0;
+        const tt = totals[idx] ?? 0;
+        const ca = calls[idx] ?? 0;
+        return [
+          `<div style="font-weight:600;margin-bottom:4px">${list[0]!.axisValue}</div>`,
+          `<div>对话输入: <b>${cp.toLocaleString()}</b></div>`,
+          `<div>对话输出: <b>${cc.toLocaleString()}</b></div>`,
+          `<div>向量化: <b>${em.toLocaleString()}</b></div>`,
+          `<div style="margin-top:4px;color:#999">合计 ${tt.toLocaleString()} · 调用 ${ca} 次</div>`,
+        ].join("");
+      },
+    },
+    xAxis: {
+      type: "category",
+      data: xLabels,
+      axisLine: { lineStyle: { color: splitColor } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: axisColor,
+        fontSize: 11,
+        interval: arr.length > 16 ? Math.floor(arr.length / 12) : 0,
+      },
+    },
+    yAxis: {
+      type: "value",
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        color: axisColor,
+        fontSize: 11,
+        formatter: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : `${v}`),
+      },
+      splitLine: { lineStyle: { color: splitColor } },
+    },
+    series: [
+      {
+        name: "对话输入",
+        type: "bar",
+        stack: "chat",
+        barMaxWidth: 22,
+        itemStyle: { color: "#3b82f6", borderRadius: [0, 0, 0, 0] },
+        data: chatPrompt,
+      },
+      {
+        name: "对话输出",
+        type: "bar",
+        stack: "chat",
+        barMaxWidth: 22,
+        itemStyle: { color: "#10b981", borderRadius: [4, 4, 0, 0] },
+        data: chatCompletion,
+      },
+      {
+        name: "向量化",
+        type: "line",
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 6,
+        lineStyle: { color: "#f59e0b", width: 2 },
+        itemStyle: { color: "#f59e0b" },
+        data: embedding,
+      },
+    ],
+  };
+});
 
 function handlePageChange(p: number, ps: number) {
   page.value = p;
@@ -297,7 +352,7 @@ onMounted(refreshAll);
       <a-col :xs="12" :sm="12" :md="6">
         <a-card>
           <a-statistic title="合计 tokens" :value="totals.total_tokens"
-            :value-style="{ color: '#1677ff', fontWeight: 700 }" />
+            :value-style="{ color: 'var(--primary)', fontWeight: 600 }" />
         </a-card>
       </a-col>
       <a-col :xs="12" :sm="12" :md="6">
@@ -331,37 +386,7 @@ onMounted(refreshAll);
       </template>
 
       <div v-if="trendData.length" class="trend-chart">
-        <div class="trend-bars-area">
-          <div v-for="(p, i) in trendData" :key="i" class="trend-col">
-            <a-tooltip>
-              <template #title>
-                <div>{{ fmtBucket(p) }}</div>
-                <div>对话输入: {{ bucketSegments(p).chatPrompt.toLocaleString() }}</div>
-                <div>对话输出: {{ bucketSegments(p).chatCompletion.toLocaleString() }}</div>
-                <div>向量化: {{ bucketSegments(p).embedding.toLocaleString() }}</div>
-                <div>合计: {{ p.total_tokens.toLocaleString() }}</div>
-                <div>调用: {{ p.calls }} 次</div>
-              </template>
-              <div class="trend-bar-wrap">
-                <div class="trend-bar trend-bar-completion"
-                  :style="{ height: (bucketSegments(p).chatCompletion / trendMax) * 100 + '%' }"></div>
-                <div class="trend-bar trend-bar-prompt"
-                  :style="{ height: (bucketSegments(p).chatPrompt / trendMax) * 100 + '%' }"></div>
-              </div>
-            </a-tooltip>
-          </div>
-          <svg class="trend-line-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-            <polyline :points="embeddingPolyline" fill="none" stroke="#fa8c16" stroke-width="1.5"
-              vector-effect="non-scaling-stroke" />
-          </svg>
-          <div v-for="(pt, i) in embeddingPoints" :key="'pt' + i" class="trend-line-dot"
-            :style="{ left: pt.x + '%', top: pt.y + '%' }" :title="'向量化: ' + pt.value.toLocaleString()"></div>
-        </div>
-        <div class="trend-labels">
-          <div v-for="(p, i) in trendData" :key="'l' + i" class="trend-label">
-            {{ fmtBucketShort(p) }}
-          </div>
-        </div>
+        <EChart :option="trendOption" :loading="loadingTrend" class="trend-echart" />
       </div>
       <a-empty v-else description="暂无数据" />
     </a-card>
@@ -501,15 +526,15 @@ onMounted(refreshAll);
 }
 
 .trend-summary .dot-prompt {
-  background: #1677ff;
+  background: #3b82f6;
 }
 
 .trend-summary .dot-completion {
-  background: #52c41a;
+  background: #10b981;
 }
 
 .trend-summary .dot-embedding {
-  background: #fa8c16;
+  background: #f59e0b;
 }
 
 .trend-summary .muted {
@@ -519,98 +544,10 @@ onMounted(refreshAll);
 
 .trend-chart {
   padding: 8px 4px 0;
-  overflow-x: auto;
 }
 
-.trend-bars-area {
-  position: relative;
-  display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  height: 200px;
-}
-
-.trend-labels {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.trend-labels .trend-label {
-  flex: 1 0 24px;
-  min-width: 24px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-muted, #6b7280);
-  white-space: nowrap;
-}
-
-.trend-col {
-  flex: 1 0 24px;
-  min-width: 24px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  height: 100%;
-}
-
-.trend-line-overlay {
-  position: absolute;
-  inset: 0;
+.trend-echart {
   width: 100%;
-  height: 100%;
-  pointer-events: none;
-  overflow: visible;
-}
-
-.trend-line-dot {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  margin-left: -4px;
-  margin-top: -4px;
-  border-radius: 50%;
-  background: #fa8c16;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
-  pointer-events: auto;
-}
-
-:root[data-theme="dark"] .trend-line-dot {
-  box-shadow: 0 0 0 2px rgba(20, 20, 20, 0.9);
-}
-
-.trend-bar-wrap {
-  flex: 1;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  align-items: stretch;
-  background: var(--bar-track, #f5f5f5);
-  border-radius: 4px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: filter 0.15s;
-}
-
-.trend-col:hover .trend-bar-wrap {
-  filter: brightness(0.92);
-}
-
-.trend-bar {
-  width: 100%;
-  transition: height 0.25s ease;
-}
-
-.trend-bar-prompt {
-  background: #1677ff;
-}
-
-.trend-bar-completion {
-  background: #52c41a;
-}
-
-:root[data-theme="dark"] .trend-bar-wrap {
-  background: rgba(255, 255, 255, 0.06);
+  height: 260px;
 }
 </style>

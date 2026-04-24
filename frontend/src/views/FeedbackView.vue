@@ -6,6 +6,8 @@ import api from "@/api";
 import type { FeedbackSummary, FeedbackItem } from "@/api";
 import { useToast } from "@/composables/useToast";
 import { useAppStore } from "@/stores/session";
+import EChart from "@/components/EChart.vue";
+import type { EChartsOption } from "echarts";
 
 const toast = useToast();
 const router = useRouter();
@@ -37,7 +39,6 @@ const items = computed<FeedbackItem[]>(() => data.value?.items ?? []);
 const trend = computed(() => data.value?.trend ?? []);
 const trendRange = ref<7 | 30>(7);
 const trendData = computed(() => trend.value.slice(-trendRange.value));
-const trendMax = computed(() => Math.max(1, ...trendData.value.map((d) => d.up + d.down)));
 const trendTotal = computed(() => {
   const up = trendData.value.reduce((s, d) => s + d.up, 0);
   const down = trendData.value.reduce((s, d) => s + d.down, 0);
@@ -49,6 +50,108 @@ function fmtMD(date: string) {
   const parts = date.split("-");
   return parts.length === 3 ? `${+(parts[1] ?? 0)}/${+(parts[2] ?? 0)}` : date;
 }
+
+// ---- ECharts: 反馈趋势（堆叠柱：👍 + 👎） ----
+const trendOption = computed<EChartsOption>(() => {
+  const isDark = document.documentElement.dataset.theme === "dark";
+  const axisColor = isDark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.55)";
+  const splitColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+  const xs = trendData.value.map((d) => fmtMD(d.date));
+  const ups = trendData.value.map((d) => d.up);
+  const downs = trendData.value.map((d) => d.down);
+  return {
+    grid: { left: 30, right: 16, top: 24, bottom: 30, containLabel: true },
+    legend: { data: ["👍 点赞", "👎 点踩"], textStyle: { color: axisColor }, top: 0, right: 0 },
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    xAxis: {
+      type: "category",
+      data: xs,
+      axisLine: { lineStyle: { color: splitColor } },
+      axisTick: { show: false },
+      axisLabel: { color: axisColor, fontSize: 11 },
+    },
+    yAxis: {
+      type: "value",
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: axisColor, fontSize: 11 },
+      splitLine: { lineStyle: { color: splitColor } },
+      minInterval: 1,
+    },
+    series: [
+      {
+        name: "👍 点赞",
+        type: "bar",
+        stack: "fb",
+        barMaxWidth: 22,
+        itemStyle: { color: "#10b981", borderRadius: [4, 4, 0, 0] },
+        data: ups,
+      },
+      {
+        name: "👎 点踩",
+        type: "bar",
+        stack: "fb",
+        barMaxWidth: 22,
+        itemStyle: { color: "#ef4444" },
+        data: downs,
+      },
+    ],
+  };
+});
+
+// ---- ECharts: 原因分布（横向条形图） ----
+const reasonOption = computed<EChartsOption>(() => {
+  const isDark = document.documentElement.dataset.theme === "dark";
+  const axisColor = isDark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.55)";
+  const splitColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+  const sorted = [...reasonCounts.value].sort((a, b) => a.count - b.count);
+  return {
+    grid: { left: 16, right: 30, top: 8, bottom: 8, containLabel: true },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: unknown) => {
+        const list = params as Array<{ name: string; value: number }>;
+        if (!list?.length) return "";
+        const p = list[0]!;
+        const pct = totalReasons.value ? ((p.value / totalReasons.value) * 100).toFixed(1) : "0";
+        return `${p.name}<br/><b>${p.value}</b> 次 · ${pct}%`;
+      },
+    },
+    xAxis: {
+      type: "value",
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: axisColor, fontSize: 11 },
+      splitLine: { lineStyle: { color: splitColor } },
+      minInterval: 1,
+    },
+    yAxis: {
+      type: "category",
+      data: sorted.map((r) => r.reason),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: axisColor, fontSize: 12 },
+    },
+    series: [
+      {
+        type: "bar",
+        barMaxWidth: 16,
+        itemStyle: {
+          color: "rgba(239, 68, 68, 0.75)",
+          borderRadius: [0, 4, 4, 0],
+        },
+        label: {
+          show: true,
+          position: "right",
+          color: axisColor,
+          fontSize: 11,
+        },
+        data: sorted.map((r) => r.count),
+      },
+    ],
+  };
+});
 const totalReasons = computed(() => reasonCounts.value.reduce((s, r) => s + r.count, 0));
 const satisfaction = computed(() => {
   const s = stats.value;
@@ -151,24 +254,7 @@ function jumpToConversation(it: FeedbackItem) {
         </div>
       </div>
       <div class="trend-chart" v-if="trendData.length">
-        <div
-          v-for="d in trendData"
-          :key="d.date"
-          class="trend-col"
-          :title="`${d.date}\n👍 ${d.up}\n👎 ${d.down}`"
-        >
-          <div class="trend-bar-wrap">
-            <div
-              class="trend-bar trend-bar-down"
-              :style="{ height: (d.down / trendMax) * 100 + '%' }"
-            ></div>
-            <div
-              class="trend-bar trend-bar-up"
-              :style="{ height: (d.up / trendMax) * 100 + '%' }"
-            ></div>
-          </div>
-          <div class="trend-label">{{ fmtMD(d.date) }}</div>
-        </div>
+        <EChart :option="trendOption" :loading="loading" class="trend-echart" />
       </div>
       <a-empty v-else description="暂无趋势数据" />
     </section>
@@ -179,17 +265,12 @@ function jumpToConversation(it: FeedbackItem) {
         <h3>👎 原因分布</h3>
         <span class="panel-meta">共 {{ totalReasons }} 次原因标注</span>
       </div>
-      <div class="reason-list" v-if="reasonCounts.length">
-        <div v-for="r in reasonCounts" :key="r.reason" class="reason-row">
-          <div class="reason-name">{{ r.reason }}</div>
-          <div class="reason-bar">
-            <div
-              class="reason-bar-fill"
-              :style="{ width: totalReasons ? (r.count / totalReasons) * 100 + '%' : '0' }"
-            ></div>
-          </div>
-          <div class="reason-count">{{ r.count }}</div>
-        </div>
+      <div class="reason-chart" v-if="reasonCounts.length">
+        <EChart
+          :option="reasonOption"
+          class="reason-echart"
+          :style="{ height: Math.max(160, reasonCounts.length * 32) + 'px' }"
+        />
       </div>
       <a-empty v-else description="暂无点踩原因数据" />
     </section>
@@ -284,7 +365,7 @@ function jumpToConversation(it: FeedbackItem) {
 }
 .stat-card {
   padding: 14px 16px;
-  background: var(--bg-card, var(--bg-hover));
+  background: var(--bg-card, #fff);
   border: 1px solid var(--border);
   border-radius: 12px;
   position: relative;
@@ -300,7 +381,7 @@ function jumpToConversation(it: FeedbackItem) {
 }
 .stat-value {
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary);
   line-height: 1.1;
 }
@@ -309,34 +390,25 @@ function jumpToConversation(it: FeedbackItem) {
   color: var(--text-secondary);
   margin-top: 4px;
 }
-.stat-card.stat-up {
-  background: linear-gradient(135deg, rgba(34, 197, 94, 0.08), transparent);
-  border-color: rgba(34, 197, 94, 0.3);
-}
 .stat-card.stat-up .stat-label {
-  color: #22c55e;
-}
-.stat-card.stat-down {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), transparent);
-  border-color: rgba(239, 68, 68, 0.3);
+  color: #16a34a;
 }
 .stat-card.stat-down .stat-label {
-  color: #ef4444;
+  color: #dc2626;
 }
-.stat-card.stat-rate {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), transparent);
-  border-color: rgba(139, 92, 246, 0.35);
+.stat-card.stat-rate .stat-value {
+  color: var(--primary);
 }
 .stat-bar {
   margin-top: 8px;
-  height: 6px;
+  height: 4px;
   background: var(--bg-hover);
-  border-radius: 3px;
+  border-radius: 2px;
   overflow: hidden;
 }
 .stat-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #8b5cf6, #6366f1);
+  background: var(--primary);
   transition: width 0.4s ease;
 }
 
@@ -394,90 +466,21 @@ function jumpToConversation(it: FeedbackItem) {
 }
 
 .trend-chart {
-  display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  height: 160px;
-  padding-top: 8px;
-}
-.trend-col {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  height: 100%;
-}
-.trend-bar-wrap {
-  flex: 1;
   width: 100%;
-  display: flex;
-  flex-direction: column-reverse;
-  align-items: stretch;
-  background: linear-gradient(to top, var(--bg-hover) 0%, transparent 100%);
-  border-radius: 4px;
-  overflow: hidden;
-  position: relative;
-}
-.trend-bar {
-  width: 100%;
-  transition: height 0.3s ease;
-  min-height: 0;
-}
-.trend-bar-up {
-  background: linear-gradient(to top, #22c55e, #4ade80);
-  border-radius: 3px 3px 0 0;
-}
-.trend-bar-down {
-  background: linear-gradient(to top, #ef4444, #f87171);
-}
-.trend-bar-up:not(:first-child) {
-  border-radius: 3px 3px 0 0;
-}
-.trend-col:hover .trend-bar {
-  filter: brightness(1.15);
-}
-.trend-label {
-  font-size: 10.5px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
-/* 原因条形图 */
-.reason-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.trend-echart {
+  width: 100%;
+  height: 220px;
 }
-.reason-row {
-  display: grid;
-  grid-template-columns: 110px 1fr 40px;
-  align-items: center;
-  gap: 12px;
+
+/* 原因分布 */
+.reason-chart {
+  width: 100%;
 }
-.reason-name {
-  font-size: 12.5px;
-  color: var(--text-primary);
-}
-.reason-bar {
-  height: 10px;
-  background: var(--bg-hover);
-  border-radius: 5px;
-  overflow: hidden;
-}
-.reason-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, rgba(239, 68, 68, 0.7), rgba(239, 68, 68, 0.4));
-  border-radius: 5px;
-  transition: width 0.4s ease;
-}
-.reason-count {
-  font-size: 12px;
-  color: var(--text-secondary);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
+
+.reason-echart {
+  width: 100%;
 }
 
 /* 明细列表 */
@@ -506,10 +509,10 @@ function jumpToConversation(it: FeedbackItem) {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
 }
 .fb-item.up {
-  border-left-color: #22c55e;
+  border-left-color: #16a34a;
 }
 .fb-item.down {
-  border-left-color: #ef4444;
+  border-left-color: #dc2626;
 }
 .fb-item-head {
   display: flex;
@@ -521,10 +524,10 @@ function jumpToConversation(it: FeedbackItem) {
   font-size: 13px;
 }
 .fb-item.up .fb-rating {
-  color: #22c55e;
+  color: #16a34a;
 }
 .fb-item.down .fb-rating {
-  color: #ef4444;
+  color: #dc2626;
 }
 .fb-conv-title {
   font-size: 12.5px;

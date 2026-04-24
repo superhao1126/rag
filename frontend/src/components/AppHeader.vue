@@ -231,35 +231,29 @@ onMounted(() => {
 
 .logo-icon {
   font-size: 17px;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--primary);
 }
 
-/* 深色模式：渐变 Logo */
+/* 深色模式下 logo 图标也用 primary，去掉花哨渐变 */
 :root[data-theme="dark"] .logo-icon {
-  background: linear-gradient(135deg, #a5b4fc, #c084fc);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--primary);
 }
 
 .logo-text {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: -0.2px;
-  color: rgba(255, 255, 255, 0.95);
+  color: var(--text-primary);
 }
 
 :root[data-theme="dark"] .logo-text {
-  background: linear-gradient(135deg, #e0e7ff 0%, #c4b5fd 60%, #a78bfa 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--text-primary);
 }
 
 .divider {
   width: 1px;
-  height: 18px;
-  background: linear-gradient(to bottom, transparent, var(--header-divider), transparent);
+  height: 16px;
+  background: var(--header-divider);
 }
 
 /* ── 导航按钮 ── */
