@@ -3,6 +3,8 @@
 export interface KbFile {
   id: string;
   source: string;
+  status: "queued" | "processing" | "vectorized" | "failed";
+  error_message?: string | null;
   chunk_count: number;
   total_chars: number;
   uploaded_at: string | null;
@@ -13,6 +15,7 @@ export interface KbFileInfo extends KbFile {
   max_chars: number;
   avg_chars: number;
   last_updated_at: string | null;
+  last_vectorized_at?: string | null;
   chunk_index_range: [number, number];
 }
 

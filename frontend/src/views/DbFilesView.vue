@@ -5,6 +5,7 @@ import {
   ReloadOutlined,
   DeleteOutlined,
   CloudUploadOutlined,
+  SyncOutlined,
   CheckCircleFilled,
   CloseCircleFilled,
   LoadingOutlined,
@@ -159,6 +160,32 @@ function formatChars(n: number | null): string {
   return n > 10000 ? (n / 10000).toFixed(1) + " 万字" : n + " 字";
 }
 
+function statusLabel(status: KbFile["status"]): string {
+  switch (status) {
+    case "queued":
+      return "排队中";
+    case "processing":
+      return "向量化中";
+    case "vectorized":
+      return "已向量化";
+    case "failed":
+      return "向量化失败";
+  }
+}
+
+function statusColor(status: KbFile["status"]): string {
+  switch (status) {
+    case "queued":
+      return "gold";
+    case "processing":
+      return "processing";
+    case "vectorized":
+      return "success";
+    case "failed":
+      return "error";
+  }
+}
+
 async function waitForBackendProcessing(filename: string, task: UploadTask) {
   // 后端清洗/分块/向量化是异步进行的，文件出现在 /files 列表 = 处理完成
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
@@ -171,11 +198,20 @@ async function waitForBackendProcessing(filename: string, task: UploadTask) {
       });
       const hit = res.data.files.find((f) => f.source === filename);
       if (hit) {
-        task.status = "done";
-        task.percent = 100;
-        task.message = `完成 · ${hit.chunk_count} 块 · ${formatChars(hit.total_chars ?? 0)}`;
-        await loadFiles();
-        return;
+        if (hit.status === "vectorized") {
+          task.status = "done";
+          task.percent = 100;
+          task.message = `完成 · ${hit.chunk_count} 块 · ${formatChars(hit.total_chars ?? 0)}`;
+          await loadFiles();
+          return;
+        }
+        if (hit.status === "failed") {
+          task.status = "error";
+          task.message = hit.error_message ?? "向量化失败";
+          await loadFiles();
+          return;
+        }
+        task.message = statusLabel(hit.status);
       }
     } catch {
       // 轮询失败忽略，继续下一次
@@ -219,6 +255,30 @@ async function uploadFile(file: File) {
     task.message =
       err.response?.data?.msg ?? err.response?.data?.detail ?? err.message ?? "上传失败";
     toast.show(task.message, "error");
+  }
+}
+
+async function retryVectorize(record: KbFile) {
+  try {
+    const res = await api.retryVectorizeById(record.id);
+    toast.show(res.data.message, "success");
+    await loadFiles();
+    const task = reactive<UploadTask>({
+      id: Math.random().toString(36).slice(2),
+      filename: record.source,
+      status: "processing",
+      percent: 100,
+      message: "已重新加入队列，等待向量化…",
+    });
+    tasks.value.unshift(task);
+    await waitForBackendProcessing(record.source, task);
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { msg?: string; detail?: string } }; message?: string };
+    toast.show(
+      err.response?.data?.msg ?? err.response?.data?.detail ?? err.message ?? "重试失败",
+      "error",
+    );
+    await loadFiles();
   }
 }
 
@@ -303,6 +363,7 @@ async function batchDelete() {
 
 const columns = [
   { title: "文件名", key: "source", ellipsis: true },
+  { title: "状态", key: "status", width: 120, align: "center" as const },
   {
     title: "文本块数",
     dataIndex: "chunk_count",
@@ -312,7 +373,7 @@ const columns = [
   },
   { title: "总字符数", key: "total_chars", width: 120, align: "center" as const },
   { title: "上传时间", key: "uploaded_at", width: 180 },
-  { title: "操作", key: "action", width: 160, align: "center" as const },
+  { title: "操作", key: "action", width: 220, align: "center" as const },
 ];
 
 onMounted(async () => {
@@ -461,6 +522,12 @@ onMounted(async () => {
           <template v-else-if="column.key === 'total_chars'">
             {{ formatChars(record.total_chars) }}
           </template>
+          <template v-else-if="column.key === 'status'">
+            <a-tooltip v-if="record.status === 'failed' && record.error_message" :title="record.error_message">
+              <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+            </a-tooltip>
+            <a-tag v-else :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
+          </template>
           <template v-else-if="column.key === 'uploaded_at'">
             {{ formatDate(record.uploaded_at) }}
           </template>
@@ -480,9 +547,21 @@ onMounted(async () => {
                 type="text"
                 size="small"
                 style="color: #6366f1"
+                :disabled="record.status !== 'vectorized' || record.chunk_count === 0"
                 @click="openChunkModal(record)"
               >
                 <template #icon><BarChartOutlined /></template>
+              </a-button>
+            </a-tooltip>
+            <a-tooltip title="重新向量化">
+              <a-button
+                v-if="record.status === 'failed'"
+                type="text"
+                size="small"
+                style="color: #f59e0b"
+                @click="retryVectorize(record)"
+              >
+                <template #icon><SyncOutlined /></template>
               </a-button>
             </a-tooltip>
             <a-tooltip title="删除">
@@ -522,9 +601,15 @@ onMounted(async () => {
           <a-descriptions-item label="文件 ID">
             <code>{{ infoData.id }}</code>
           </a-descriptions-item>
+          <a-descriptions-item label="状态">
+            <a-tag :color="statusColor(infoData.status)">{{ statusLabel(infoData.status) }}</a-tag>
+          </a-descriptions-item>
           <a-descriptions-item label="文本块数">{{ infoData.chunk_count }}</a-descriptions-item>
           <a-descriptions-item label="总字符数">
             {{ formatChars(infoData.total_chars) }}
+          </a-descriptions-item>
+          <a-descriptions-item v-if="infoData.error_message" label="失败原因">
+            <span style="color: #ef4444; word-break: break-all">{{ infoData.error_message }}</span>
           </a-descriptions-item>
           <a-descriptions-item label="块字符长度">
             最小 {{ infoData.min_chars }} / 最大 {{ infoData.max_chars }} / 平均
@@ -538,6 +623,9 @@ onMounted(async () => {
           </a-descriptions-item>
           <a-descriptions-item label="最近更新">
             {{ formatDate(infoData.last_updated_at) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="最近向量化">
+            {{ formatDate(infoData.last_vectorized_at ?? null) }}
           </a-descriptions-item>
         </a-descriptions>
       </a-spin>

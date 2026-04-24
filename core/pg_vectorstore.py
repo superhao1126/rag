@@ -108,6 +108,30 @@ class PgVectorStore:
                 )
             """)
 
+            # 文件表：持久化上传状态 / 本地路径 / 向量化结果
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS rag_files (
+                    id                 VARCHAR(64) PRIMARY KEY,
+                    source             VARCHAR(512) NOT NULL UNIQUE,
+                    local_path         TEXT,
+                    status             VARCHAR(32) NOT NULL DEFAULT 'queued',
+                    error_message      TEXT,
+                    chunk_count        INTEGER NOT NULL DEFAULT 0,
+                    total_chars        INTEGER NOT NULL DEFAULT 0,
+                    uploaded_at        TIMESTAMPTZ DEFAULT NOW(),
+                    last_vectorized_at TIMESTAMPTZ,
+                    updated_at         TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rag_files_status
+                ON rag_files(status)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rag_files_uploaded_at
+                ON rag_files(uploaded_at DESC)
+            """)
+
             # 对话表
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS rag_conversations (
@@ -172,6 +196,35 @@ class PgVectorStore:
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_rag_llm_calls_model
                 ON rag_llm_calls(model)
+            """)
+
+            # 历史已入库文件补录到状态表，避免旧数据在文件列表中丢失
+            cur.execute("""
+                INSERT INTO rag_files (
+                    id, source, status, chunk_count, total_chars,
+                    uploaded_at, last_vectorized_at, updated_at
+                )
+                SELECT
+                    SUBSTRING(MD5(source) FOR 16),
+                    source,
+                    'vectorized',
+                    COUNT(*),
+                    COALESCE(SUM(char_count), 0),
+                    MIN(created_at),
+                    MAX(created_at),
+                    MAX(created_at)
+                FROM rag_chunks
+                WHERE source IS NOT NULL AND source <> ''
+                GROUP BY source
+                ON CONFLICT (source) DO UPDATE SET
+                    chunk_count = EXCLUDED.chunk_count,
+                    total_chars = EXCLUDED.total_chars,
+                    last_vectorized_at = EXCLUDED.last_vectorized_at,
+                    updated_at = CASE
+                        WHEN rag_files.status = 'vectorized'
+                        THEN EXCLUDED.updated_at
+                        ELSE rag_files.updated_at
+                    END
             """)
 
         print("  ✅ PostgreSQL 数据库表已就绪")
@@ -348,11 +401,14 @@ class PgVectorStore:
         with self.conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM rag_chunks")
             total = cur.fetchone()[0]
-            cur.execute("SELECT DISTINCT source FROM rag_chunks ORDER BY source")
+            cur.execute("SELECT COUNT(*) FROM rag_files")
+            total_files = cur.fetchone()[0]
+            cur.execute("SELECT source FROM rag_files ORDER BY source")
             sources = [row[0] for row in cur.fetchall()]
 
         return {
             "total_chunks": total,
+            "total_files": total_files,
             "embedding_dimension": self.embedding_dimension,
             "storage_type": "PostgreSQL + pgvector",
             "sources": sources,
@@ -390,20 +446,19 @@ class PgVectorStore:
             params.append(f"%{kw}%")
 
         with self.conn.cursor() as cur:
-            cur.execute(
-                f"SELECT COUNT(DISTINCT source) FROM rag_chunks {where_sql}",
-                params,
-            )
+            cur.execute(f"SELECT COUNT(*) FROM rag_files {where_sql}", params)
             total = int(cur.fetchone()[0] or 0)
 
             sql = f"""
-                SELECT source,
-                       COUNT(*) AS chunk_count,
-                       SUM(char_count) AS total_chars,
-                       MIN(created_at) AS uploaded_at
-                FROM rag_chunks
+                SELECT id,
+                       source,
+                       status,
+                       error_message,
+                       chunk_count,
+                       total_chars,
+                       uploaded_at
+                FROM rag_files
                 {where_sql}
-                GROUP BY source
                 ORDER BY uploaded_at DESC
             """
             limit_params: List = list(params)
@@ -415,11 +470,13 @@ class PgVectorStore:
 
         files = [
             {
-                "id": file_id_for(r[0]),
-                "source": r[0],
-                "chunk_count": r[1],
-                "total_chars": int(r[2]) if r[2] else 0,
-                "uploaded_at": r[3].isoformat() if r[3] else None,
+                "id": r[0],
+                "source": r[1],
+                "status": r[2],
+                "error_message": r[3],
+                "chunk_count": int(r[4] or 0),
+                "total_chars": int(r[5] or 0),
+                "uploaded_at": r[6].isoformat() if r[6] else None,
             }
             for r in rows
         ]
@@ -431,24 +488,46 @@ class PgVectorStore:
         }
 
     def get_source_by_id(self, file_id: str) -> Optional[str]:
-        """根据文件 ID 反查 source（遍历所有 source 计算 hash 比对）。
-
-        当文件量极大时可以缓存到内存，但通常 source 数量在数千以内，
-        每次 SELECT DISTINCT 性能足够。
-        """
         if not file_id:
             return None
         with self.conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT source FROM rag_chunks")
-            rows = cur.fetchall()
-        for (src,) in rows:
-            if file_id_for(src) == file_id:
-                return src
-        return None
+            cur.execute("SELECT source FROM rag_files WHERE id = %s LIMIT 1", (file_id,))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    def get_file_record(self, *, file_id: str | None = None, source: str | None = None) -> Optional[Dict]:
+        if not file_id and not source:
+            return None
+        where_sql = "id = %s" if file_id else "source = %s"
+        value = file_id or source
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT id, source, local_path, status, error_message, chunk_count, total_chars,
+                           uploaded_at, last_vectorized_at, updated_at
+                    FROM rag_files
+                    WHERE {where_sql}
+                    LIMIT 1""",
+                (value,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "source": row[1],
+            "local_path": row[2],
+            "status": row[3],
+            "error_message": row[4],
+            "chunk_count": int(row[5] or 0),
+            "total_chars": int(row[6] or 0),
+            "uploaded_at": row[7].isoformat() if row[7] else None,
+            "last_vectorized_at": row[8].isoformat() if row[8] else None,
+            "updated_at": row[9].isoformat() if row[9] else None,
+        }
 
     def file_exists(self, source: str) -> bool:
         with self.conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM rag_chunks WHERE source = %s LIMIT 1", (source,))
+            cur.execute("SELECT 1 FROM rag_files WHERE source = %s LIMIT 1", (source,))
             return cur.fetchone() is not None
 
     def get_file_info(self, source: str) -> Optional[Dict]:
@@ -456,19 +535,24 @@ class PgVectorStore:
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT source,
-                       COUNT(*)              AS chunk_count,
-                       SUM(char_count)       AS total_chars,
-                       MIN(char_count)       AS min_chars,
-                       MAX(char_count)       AS max_chars,
-                       AVG(char_count)       AS avg_chars,
-                       MIN(created_at)       AS uploaded_at,
-                       MAX(created_at)       AS last_updated_at,
-                       MIN(chunk_index)      AS first_chunk_index,
-                       MAX(chunk_index)      AS last_chunk_index
-                FROM rag_chunks
-                WHERE source = %s
-                GROUP BY source
+                SELECT f.id,
+                       f.source,
+                       f.status,
+                       f.error_message,
+                       f.uploaded_at,
+                       f.updated_at,
+                       COALESCE(COUNT(c.id), 0)         AS chunk_count,
+                       COALESCE(SUM(c.char_count), 0)   AS total_chars,
+                       COALESCE(MIN(c.char_count), 0)   AS min_chars,
+                       COALESCE(MAX(c.char_count), 0)   AS max_chars,
+                       COALESCE(AVG(c.char_count), 0)   AS avg_chars,
+                       COALESCE(MIN(c.chunk_index), 0)  AS first_chunk_index,
+                       COALESCE(MAX(c.chunk_index), 0)  AS last_chunk_index,
+                       MAX(c.created_at)                AS last_vectorized_at
+                FROM rag_files f
+                LEFT JOIN rag_chunks c ON c.source = f.source
+                WHERE f.source = %s
+                GROUP BY f.id, f.source, f.status, f.error_message, f.uploaded_at, f.updated_at
                 """,
                 (source,),
             )
@@ -477,18 +561,21 @@ class PgVectorStore:
             return None
 
         return {
-            "id": file_id_for(row[0]),
-            "source": row[0],
-            "chunk_count": int(row[1] or 0),
-            "total_chars": int(row[2] or 0),
-            "min_chars": int(row[3] or 0),
-            "max_chars": int(row[4] or 0),
-            "avg_chars": round(float(row[5] or 0), 1),
-            "uploaded_at": row[6].isoformat() if row[6] else None,
-            "last_updated_at": row[7].isoformat() if row[7] else None,
+            "id": row[0],
+            "source": row[1],
+            "status": row[2],
+            "error_message": row[3],
+            "chunk_count": int(row[6] or 0),
+            "total_chars": int(row[7] or 0),
+            "min_chars": int(row[8] or 0),
+            "max_chars": int(row[9] or 0),
+            "avg_chars": round(float(row[10] or 0), 1),
+            "uploaded_at": row[4].isoformat() if row[4] else None,
+            "last_updated_at": row[5].isoformat() if row[5] else None,
+            "last_vectorized_at": row[13].isoformat() if row[13] else None,
             "chunk_index_range": [
-                int(row[8] or 0),
-                int(row[9] or 0),
+                int(row[11] or 0),
+                int(row[12] or 0),
             ],
         }
 
@@ -496,7 +583,99 @@ class PgVectorStore:
         """从库中删除指定来源的所有块"""
         with self.conn.cursor() as cur:
             cur.execute("DELETE FROM rag_chunks WHERE source = %s", (source,))
+            cur.execute("DELETE FROM rag_files WHERE source = %s", (source,))
         self._invalidate_cache()
+
+    def upsert_file(self, source: str, *, local_path: str | None, status: str, error_message: str | None = None):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO rag_files (id, source, local_path, status, error_message, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (source) DO UPDATE SET
+                    local_path = EXCLUDED.local_path,
+                    status = EXCLUDED.status,
+                    error_message = EXCLUDED.error_message,
+                    updated_at = NOW()
+                """,
+                (file_id_for(source), source, local_path, status, error_message),
+            )
+
+    def mark_file_processing(self, source: str):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE rag_files
+                SET status = 'processing',
+                    error_message = NULL,
+                    updated_at = NOW()
+                WHERE source = %s
+                """,
+                (source,),
+            )
+
+    def mark_file_failed(self, source: str, error_message: str):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE rag_files
+                SET status = 'failed',
+                    error_message = %s,
+                    updated_at = NOW()
+                WHERE source = %s
+                """,
+                (error_message, source),
+            )
+
+    def mark_file_vectorized(self, source: str):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(char_count), 0), MAX(created_at)
+                FROM rag_chunks
+                WHERE source = %s
+                """,
+                (source,),
+            )
+            row = cur.fetchone()
+            chunk_count = int(row[0] or 0)
+            total_chars = int(row[1] or 0)
+            last_vectorized_at = row[2]
+            cur.execute(
+                """
+                UPDATE rag_files
+                SET status = 'vectorized',
+                    error_message = NULL,
+                    chunk_count = %s,
+                    total_chars = %s,
+                    last_vectorized_at = %s,
+                    updated_at = NOW()
+                WHERE source = %s
+                """,
+                (chunk_count, total_chars, last_vectorized_at, source),
+            )
+
+    def recover_interrupted_files(self) -> int:
+        """服务启动时恢复上次异常退出遗留的任务。
+
+        进程内队列在服务退出后会丢失，因此上一轮遗留在 queued / processing
+        的文件不可能继续推进。这里统一改成 failed，让前端展示“可重试”。
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE rag_files
+                SET status = 'failed',
+                    error_message = CASE
+                        WHEN error_message IS NULL OR error_message = ''
+                        THEN '服务曾异常中断，请点击重新向量化'
+                        ELSE error_message
+                    END,
+                    updated_at = NOW()
+                WHERE status IN ('queued', 'processing')
+                """
+            )
+            return cur.rowcount or 0
 
     # ---- BM25 索引缓存（全局唯一）----
 

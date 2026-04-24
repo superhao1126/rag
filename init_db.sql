@@ -36,6 +36,25 @@ CREATE TABLE IF NOT EXISTS rag_bm25_cache (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 文件状态表（上传成功但向量化失败的文件也会保留在这里）
+CREATE TABLE IF NOT EXISTS rag_files (
+    id                 VARCHAR(64) PRIMARY KEY,
+    source             VARCHAR(512) NOT NULL UNIQUE,
+    local_path         TEXT,
+    status             VARCHAR(32) NOT NULL DEFAULT 'queued',
+    error_message      TEXT,
+    chunk_count        INTEGER NOT NULL DEFAULT 0,
+    total_chars        INTEGER NOT NULL DEFAULT 0,
+    uploaded_at        TIMESTAMPTZ DEFAULT NOW(),
+    last_vectorized_at TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_files_status
+    ON rag_files(status);
+CREATE INDEX IF NOT EXISTS idx_rag_files_uploaded_at
+    ON rag_files(uploaded_at DESC);
+
 -- 对话表
 CREATE TABLE IF NOT EXISTS rag_conversations (
     id         VARCHAR(64) PRIMARY KEY,

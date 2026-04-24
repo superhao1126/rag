@@ -107,6 +107,7 @@
 ```text
 用户上传文件
     ↓ POST /api/upload
+[0] upload queue.enqueue()    快速返回，后台 worker 串行消费
 [1] reader.read()             读取解析（PyMuPDF → OCR fallback）
 [2] cleaner.clean()           清洗去噪（控制字符 / HTML / 页眉页脚 / CJK 空格）
 [3] chunker.chunk()           切块（chunk_size=300, overlap=60）
@@ -238,7 +239,9 @@ python main.py --dir ./documents -q "主要内容是什么？"
 | --- | --- | --- |
 | `POST` | `/api/upload` | 快速上传，返回 202 后后台处理 |
 | `POST` | `/api/upload/stream` | SSE 上传进度 |
+| `GET` | `/api/upload/queue` | 上传任务队列状态 |
 | `GET` | `/api/files` | 已索引文件列表 |
+| `POST` | `/api/files/by-id/{id}/revectorize` | 对失败文件重新加入向量化队列 |
 | `DELETE` | `/api/files/{id}` | 删除文件 |
 | `GET` | `/api/chunks` | 分块预览 |
 | `POST` | `/api/query` | SSE 流式问答 |
@@ -271,7 +274,10 @@ python main.py --dir ./documents -q "主要内容是什么？"
 ### DbFilesView
 
 - 上传后立即进入 `processing`
-- 每 2 秒轮询 `/api/files` 判断后台处理完成
+- 标准上传走后台任务队列，前端每 2 秒轮询 `/api/files` 判断处理完成
+- 文件列表持久化显示 `排队中 / 向量化中 / 已向量化 / 向量化失败`
+- 向量化失败的文件支持一键重新加入队列
+- 服务异常重启后，遗留的 `排队中 / 向量化中` 文件会自动恢复为可重试状态
 - 支持删除、分块预览
 
 ### FeedbackView
@@ -364,7 +370,8 @@ ORDER BY day, call_type;
 
 ### 注意事项
 
-- `BackgroundTasks` 依赖 `Response.background`，自定义中间件不能丢
+- 标准上传接口已改为进程内任务队列，避免重活阻塞 FastAPI 请求线程
+- `/api/upload/stream` 仍保留直连处理，便于调试实时进度
 - `UnifiedResponseMiddleware` 会把原 HTTP 状态写进 body 的 `code`
 - `paddleocr` 体积较大，CI / 离线环境建议关闭 OCR
 - `EMBEDDING_DIMENSION` 变更时，需同步数据库 `vector(N)`
@@ -378,7 +385,7 @@ ORDER BY day, call_type;
 | 现象 | 排查方向 |
 | --- | --- |
 | 上传 202 但前端报错 | 检查前端是否接受 2xx 范围 |
-| 后台任务不执行 | 检查中间件是否丢失 `response.background` |
+| 上传长时间不完成 | 检查 `/api/upload/queue` 是否堆积，或看服务日志中的 upload-queue |
 | 检索召回为空 | 看 `rag_chunks` 是否有数据，BM25 缓存是否刷新 |
 | OCR ImportError | 关闭 `OCR_ENABLED` 或补装 OCR 依赖 |
 | pgvector 维度不匹配 | 检查模型维度与 `vector(N)` |
@@ -412,12 +419,12 @@ ORDER BY day, call_type;
 ### 高优先级
 
 1. 把 OCR 拆成可选安装，降低首次部署成本
-2. 引入异步数据库驱动或任务队列，减轻同步 IO 阻塞
+2. 继续演进为独立进程 / 外部任务队列，降低单进程 worker 风险
 3. 完善多知识库隔离（如 `kb_id`）
 4. 为检索链路增加 rerank 或质量评估
 
 ### 产品体验
 
 1. ChatView 可加虚拟列表，提升长会话性能
-2. 上传可进一步演进为真正队列式异步任务
+2. 上传队列可进一步演进为 Redis / Celery / RQ 等外部任务系统
 3. 可以考虑补 i18n 与更细的错误码映射

@@ -3,39 +3,24 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Body, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from core.reader import FileReader
 from core.pg_vectorstore import file_id_for
 
-from ..deps import get_rag, require_pg
+from ..deps import get_rag, get_upload_queue, require_pg
 
 router = APIRouter(prefix="/api", tags=["files"])
 
-logger = logging.getLogger(__name__)
-
-
-def _process_file_silently(rag, file_path: str, filename: str) -> None:
-    """后台静默处理：清洗 → 分块 → 向量化 → 入库。
-
-    出错只记录日志，不影响前端（前端通过文件列表是否出现该文件来判断结果）。
-    """
-    try:
-        rag.add_file(file_path)
-        logger.info("[upload] 后台处理完成: %s", filename)
-    except Exception as exc:  # noqa: BLE001 — 后台任务必须吞异常防止崩溃
-        logger.exception("[upload] 后台处理失败: %s — %s", filename, exc)
-
 
 @router.post("/upload", status_code=202)
-async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...)):
     """
-    上传文件 —— 仅做"接收 + 落盘"，处理流程（清洗/分块/向量化/入库）放到后台。
+    上传文件 —— 仅做"接收 + 落盘"，处理流程（清洗/分块/向量化/入库）进入任务队列。
 
     用户视角：HTTP 上传完成即视为"上传成功"。前端通过轮询 `/api/files` 列表
     判断文件是否已处理完毕（处理完后会出现在列表中）。
@@ -57,13 +42,20 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
         content = await file.read()
         f.write(content)
 
-    # 后台静默执行重活（清洗 / 分块 / 向量化 / 入库 / 重建 BM25）
-    background_tasks.add_task(_process_file_silently, rag, file_path, file.filename)
+    if rag._use_pg:
+        rag.vector_store.upsert_file(
+            file.filename,
+            local_path=file_path,
+            status="queued",
+            error_message=None,
+        )
+    task = get_upload_queue().enqueue(file_path, file.filename)
 
     return {
+        "task_id": task["task_id"],
         "filename": file.filename,
         "size": len(content),
-        "message": "上传成功，正在后台处理",
+        "message": "上传成功，已进入后台任务队列",
     }
 
 
@@ -89,6 +81,14 @@ async def upload_file_stream(file: UploadFile = File(...)):
         content = await file.read()
         f.write(content)
 
+    if rag._use_pg:
+        rag.vector_store.upsert_file(
+            file.filename,
+            local_path=file_path,
+            status="queued",
+            error_message=None,
+        )
+
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_event_loop()
 
@@ -96,9 +96,20 @@ async def upload_file_stream(file: UploadFile = File(...)):
         loop.call_soon_threadsafe(queue.put_nowait, event)
 
     async def event_stream():
-        task = asyncio.create_task(
-            asyncio.to_thread(rag.add_file_with_progress, file_path, on_progress)
-        )
+        def process_upload_stream():
+            source = file.filename
+            if rag._use_pg:
+                rag.vector_store.mark_file_processing(source)
+            try:
+                rag.add_file_with_progress(file_path, on_progress)
+                if rag._use_pg:
+                    rag.vector_store.mark_file_vectorized(source)
+            except Exception as exc:
+                if rag._use_pg:
+                    rag.vector_store.mark_file_failed(source, str(exc))
+                raise
+
+        task = asyncio.create_task(asyncio.to_thread(process_upload_stream))
 
         def _fmt(event: dict) -> str:
             return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -122,6 +133,11 @@ async def upload_file_stream(file: UploadFile = File(...)):
             yield _fmt({"type": "error", "message": str(e)})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/upload/queue")
+async def get_upload_queue_stats():
+    return get_upload_queue().stats()
 
 
 @router.get("/files")
@@ -168,6 +184,38 @@ async def get_file_info_by_id(file_id: str):
     if not info:
         raise HTTPException(404, f"文件不存在: {source}")
     return info
+
+
+@router.post("/files/by-id/{file_id}/revectorize")
+async def revectorize_file_by_id(file_id: str):
+    rag = get_rag()
+    require_pg(rag)
+    record = rag.vector_store.get_file_record(file_id=file_id)
+    if not record:
+        raise HTTPException(404, f"文件 ID 不存在: {file_id}")
+    if record["status"] == "vectorized":
+        raise HTTPException(400, "文件已向量化，无需重试")
+    if record["status"] in {"queued", "processing"}:
+        raise HTTPException(409, "文件已在队列中或正在处理")
+
+    local_path = (record.get("local_path") or "").strip()
+    if not local_path or not os.path.exists(local_path):
+        rag.vector_store.mark_file_failed(record["source"], "原始上传临时文件不存在，请重新上传")
+        raise HTTPException(400, "原始上传临时文件不存在，请重新上传")
+
+    rag.vector_store.upsert_file(
+        record["source"],
+        local_path=local_path,
+        status="queued",
+        error_message=None,
+    )
+    task = get_upload_queue().enqueue(local_path, record["source"])
+    return {
+        "task_id": task["task_id"],
+        "id": record["id"],
+        "source": record["source"],
+        "message": "已重新加入向量化队列",
+    }
 
 
 @router.post("/files/batch-delete")

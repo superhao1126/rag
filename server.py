@@ -22,7 +22,8 @@ from fastapi.staticfiles import StaticFiles
 
 from core.config import Config
 from core.pipeline import RAGPipeline
-from core.api.deps import set_rag, get_rag_instance
+from core.task_queue import UploadTaskQueue
+from core.api.deps import set_rag, set_upload_queue, get_rag_instance
 from core.api.middleware import UnifiedResponseMiddleware, register_exception_handlers
 from core.api.routers import register_routers
 
@@ -37,10 +38,33 @@ async def lifespan(app: FastAPI):
     config.STREAM = True
     config.HISTORY_TURNS = 5
     rag = RAGPipeline(api_key=api_key, config=config)
+    if rag._use_pg:
+        recovered = rag.vector_store.recover_interrupted_files()
+        if recovered:
+            print(f"⚠️ 已恢复 {recovered} 个中断的向量化任务，可在文件列表中重新执行")
+
+    def process_upload(file_path: str) -> None:
+        source = Path(file_path).name
+        if rag._use_pg:
+            rag.vector_store.mark_file_processing(source)
+        try:
+            rag.add_file(file_path)
+            if rag._use_pg:
+                rag.vector_store.mark_file_vectorized(source)
+        except Exception as exc:
+            if rag._use_pg:
+                rag.vector_store.mark_file_failed(source, str(exc))
+            raise
+
+    upload_queue = UploadTaskQueue(processor=process_upload)
     set_rag(rag)
+    set_upload_queue(upload_queue)
+    upload_queue.start()
     print("✅ 全局 RAGPipeline 初始化完成")
     yield
     rag = get_rag_instance()
+    upload_queue.stop()
+    set_upload_queue(None)
     if rag and rag._use_pg:
         rag.vector_store.close()
 

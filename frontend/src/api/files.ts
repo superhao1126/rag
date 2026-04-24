@@ -64,6 +64,11 @@ export const filesApi = {
   getFileInfo: (id: string) =>
     http.get<KbFileInfo>(`/files/by-id/${encodeURIComponent(id)}/info`),
 
+  retryVectorizeById: (id: string) =>
+    http.post<{ task_id: string; id: string; source: string; message: string }>(
+      `/files/by-id/${encodeURIComponent(id)}/revectorize`,
+    ),
+
   /** 推荐：按 ID 删除，避免 source 路径编码问题 */
   deleteFileById: (id: string) => http.delete(`/files/by-id/${encodeURIComponent(id)}`),
 
