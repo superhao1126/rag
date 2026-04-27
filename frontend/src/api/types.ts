@@ -42,6 +42,40 @@ export interface RagStats {
   bm25_vocabulary: number;
 }
 
+export interface ChunkItem {
+  index?: number;
+  chunk_index?: number;
+  text?: string;
+  char_count?: number;
+  start?: number;
+  end?: number;
+  source?: string;
+  chunk_type?: "api" | "normal" | string;
+  is_long_split?: boolean;
+  title?: string;
+}
+
+export interface ChunkStats {
+  total_chunks?: number;
+  avg_chunk_size?: number;
+  max_chunk_size?: number;
+  min_chunk_size?: number;
+  overlap_chars?: number;
+  chunk_size_setting?: number;
+  overlap_setting?: number;
+  min_chunk_size_setting?: number;
+  api_max_chunk_size_setting?: number;
+  original_length?: number;
+  [key: string]: number | undefined;
+}
+
+export interface ChunkSource {
+  original_text?: string;
+  original_length?: number;
+  chunks: ChunkItem[];
+  stats: ChunkStats;
+}
+
 export interface LlmModelUsage {
   prompt_tokens: number;
   completion_tokens: number;

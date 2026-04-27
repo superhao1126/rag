@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import api from "@/api";
+import type { ChunkSource } from "@/api";
 import { useToast } from "@/composables/useToast";
 import ChunkSourcePanel from "./ChunkSourcePanel.vue";
 
@@ -11,20 +12,6 @@ const loading = ref(false);
 const chunkData = ref<Record<string, ChunkSource>>({});
 const activeTab = ref("");
 const singleSource = ref<string | null>(null);
-
-interface ChunkItem {
-  index?: number;
-  chunk_index?: number;
-  text?: string;
-  char_count?: number;
-  start?: number;
-  end?: number;
-}
-
-interface ChunkSource {
-  chunks: ChunkItem[];
-  stats: Record<string, number>;
-}
 
 function open(arg?: string | { source?: string; fileId?: string }) {
   let source: string | undefined;
@@ -47,11 +34,11 @@ async function loadChunks(opts: { source?: string; fileId?: string } = {}) {
     if (opts.source) params.source = opts.source;
     if (opts.fileId) params.file_id = opts.fileId;
     const res = await api.getChunks(Object.keys(params).length ? params : undefined);
-    const data = res.data as Record<string, unknown>;
+    const data = res.data as ChunkSource | Record<string, ChunkSource>;
 
     if (data["chunks"] && data["stats"]) {
       const label = opts.source ?? "所有来源";
-      chunkData.value = { [label]: data as unknown as ChunkSource };
+      chunkData.value = { [label]: data as ChunkSource };
     } else {
       chunkData.value = data as Record<string, ChunkSource>;
     }
@@ -72,7 +59,7 @@ defineExpose({ open });
   <a-modal
     v-model:open="visible"
     :title="singleSource ? `📊 分块可视化 · ${singleSource}` : '📊 分块可视化'"
-    width="900px"
+    width="1100px"
     :footer="null"
     :body-style="{ maxHeight: '70vh', overflow: 'auto' }"
   >
