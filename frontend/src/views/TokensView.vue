@@ -21,7 +21,10 @@ const modelFilter = ref<string | undefined>(undefined);
 const loadingStats = ref(false);
 const loadingCalls = ref(false);
 
-const totals = computed(() => stats.value?.totals ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 });
+const totals = computed(
+  () =>
+    stats.value?.totals ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 },
+);
 const modelEntries = computed(() =>
   Object.entries(stats.value?.models ?? {}).map(([name, u]) => ({ key: name, name, ...u })),
 );
@@ -43,7 +46,10 @@ function typeLabel(t: string): string {
 }
 
 function typeColor(t: string): string {
-  return ({ chat: "blue", title: "purple", embedding: "green" } as Record<string, string>)[t] || "default";
+  return (
+    ({ chat: "blue", title: "purple", embedding: "green" } as Record<string, string>)[t] ||
+    "default"
+  );
 }
 
 function fmtTime(ts: number): string {
@@ -89,23 +95,23 @@ async function refreshAll() {
 }
 
 // ---- 趋势图 ----
-const trendBucket = ref<"day" | "hour">("day");
-const trendRange = ref<number>(30);
+const trendBucket = ref<"day" | "hour">("hour");
+const trendRange = ref<number>(7);
 const trendData = ref<LlmTrendPoint[]>([]);
 const loadingTrend = ref(false);
 
 const rangeOptions = computed(() =>
   trendBucket.value === "hour"
     ? [
-      { label: "近 12 小时", value: 12 },
-      { label: "近 24 小时", value: 24 },
-      { label: "近 48 小时", value: 48 },
-    ]
+        { label: "近 12 小时", value: 12 },
+        { label: "近 24 小时", value: 24 },
+        { label: "近 48 小时", value: 48 },
+      ]
     : [
-      { label: "近 7 天", value: 7 },
-      { label: "近 14 天", value: 14 },
-      { label: "近 30 天", value: 30 },
-    ],
+        { label: "近 7 天", value: 7 },
+        { label: "近 14 天", value: 14 },
+        { label: "近 30 天", value: 30 },
+      ],
 );
 
 function bucketSegments(p: LlmTrendPoint) {
@@ -125,7 +131,10 @@ function bucketSegments(p: LlmTrendPoint) {
 }
 
 const trendTotals = computed(() => {
-  let cp = 0, cc = 0, em = 0, calls = 0;
+  let cp = 0,
+    cc = 0,
+    em = 0,
+    calls = 0;
   const arr = Array.isArray(trendData.value) ? trendData.value : [];
   for (const p of arr) {
     const s = bucketSegments(p);
@@ -226,7 +235,8 @@ const trendOption = computed<EChartsOption>(() => {
       axisLabel: {
         color: axisColor,
         fontSize: 11,
-        formatter: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : `${v}`),
+        formatter: (v: number) =>
+          v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : `${v}`,
       },
       splitLine: { lineStyle: { color: splitColor } },
     },
@@ -298,7 +308,13 @@ const columns = [
   { title: "类型", dataIndex: "call_type", key: "call_type", width: 100 },
   { title: "模型", dataIndex: "model", key: "model", ellipsis: true },
   { title: "输入", dataIndex: "prompt_tokens", key: "prompt_tokens", width: 110, align: "right" },
-  { title: "输出", dataIndex: "completion_tokens", key: "completion_tokens", width: 110, align: "right" },
+  {
+    title: "输出",
+    dataIndex: "completion_tokens",
+    key: "completion_tokens",
+    width: 110,
+    align: "right",
+  },
   { title: "合计", dataIndex: "total_tokens", key: "total_tokens", width: 110, align: "right" },
   { title: "备注", dataIndex: "note", key: "note", width: 140 },
 ];
@@ -307,7 +323,13 @@ const modelColumns = [
   { title: "模型", dataIndex: "name", key: "name" },
   { title: "调用次数", dataIndex: "calls", key: "calls", align: "right", width: 100 },
   { title: "输入", dataIndex: "prompt_tokens", key: "prompt_tokens", align: "right", width: 130 },
-  { title: "输出", dataIndex: "completion_tokens", key: "completion_tokens", align: "right", width: 130 },
+  {
+    title: "输出",
+    dataIndex: "completion_tokens",
+    key: "completion_tokens",
+    align: "right",
+    width: 130,
+  },
   { title: "合计", dataIndex: "total_tokens", key: "total_tokens", align: "right", width: 130 },
 ];
 
@@ -351,8 +373,11 @@ onMounted(refreshAll);
       </a-col>
       <a-col :xs="12" :sm="12" :md="6">
         <a-card>
-          <a-statistic title="合计 tokens" :value="totals.total_tokens"
-            :value-style="{ color: 'var(--primary)', fontWeight: 600 }" />
+          <a-statistic
+            title="合计 tokens"
+            :value="totals.total_tokens"
+            :value-style="{ color: 'var(--primary)', fontWeight: 600 }"
+          />
         </a-card>
       </a-col>
       <a-col :xs="12" :sm="12" :md="6">
@@ -370,18 +395,36 @@ onMounted(refreshAll);
       <template #extra>
         <a-space :size="8">
           <span class="trend-summary">
-            <span class="dot dot-prompt"></span>对话输入 {{ trendTotals.chatPrompt.toLocaleString() }}
-            <span class="dot dot-completion"></span>对话输出 {{ trendTotals.chatCompletion.toLocaleString() }}
-            <span class="dot dot-embedding"></span>向量化(线) {{ trendTotals.embedding.toLocaleString() }}
+            <span class="dot dot-prompt"></span>对话输入
+            {{ trendTotals.chatPrompt.toLocaleString() }}
+            <span class="dot dot-completion"></span>对话输出
+            {{ trendTotals.chatCompletion.toLocaleString() }}
+            <span class="dot dot-embedding"></span>向量化(线)
+            {{ trendTotals.embedding.toLocaleString() }}
             <span class="muted">· 共 {{ trendTotals.calls }} 次</span>
           </span>
-          <a-radio-group v-model:value="trendBucket" size="small" button-style="solid" @change="onBucketChange">
+          <a-radio-group
+            v-model:value="trendBucket"
+            size="small"
+            button-style="solid"
+            @change="onBucketChange"
+          >
             <a-radio-button value="hour">小时</a-radio-button>
             <a-radio-button value="day">天</a-radio-button>
           </a-radio-group>
-          <a-select v-model:value="trendRange" size="small" style="width: 120px" :options="rangeOptions"
-            @change="loadTrend" />
-          <a-button size="small" :icon="h(ReloadOutlined)" :loading="loadingTrend" @click="loadTrend" />
+          <a-select
+            v-model:value="trendRange"
+            size="small"
+            style="width: 120px"
+            :options="rangeOptions"
+            @change="loadTrend"
+          />
+          <a-button
+            size="small"
+            :icon="h(ReloadOutlined)"
+            :loading="loadingTrend"
+            @click="loadTrend"
+          />
         </a-space>
       </template>
 
@@ -402,22 +445,45 @@ onMounted(refreshAll);
 
     <!-- 按模型 -->
     <a-card title="按模型聚合" class="block-card">
-      <a-table :columns="modelColumns" :data-source="modelEntries" :pagination="false" :loading="loadingStats"
-        size="middle" :row-key="(r: { key: string }) => r.key" />
+      <a-table
+        :columns="modelColumns"
+        :data-source="modelEntries"
+        :pagination="false"
+        :loading="loadingStats"
+        size="middle"
+        :row-key="(r: { key: string }) => r.key"
+      />
     </a-card>
 
     <!-- 调用流水 -->
     <a-card title="调用流水" class="block-card">
       <template #extra>
         <a-space>
-          <a-select v-model:value="callTypeFilter" placeholder="全部类型" allow-clear style="width: 140px"
-            :options="callTypeOptions" @change="onFilterChange" />
-          <a-select v-model:value="modelFilter" placeholder="全部模型" allow-clear style="width: 220px"
-            :options="modelOptions" @change="onFilterChange" />
+          <a-select
+            v-model:value="callTypeFilter"
+            placeholder="全部类型"
+            allow-clear
+            style="width: 140px"
+            :options="callTypeOptions"
+            @change="onFilterChange"
+          />
+          <a-select
+            v-model:value="modelFilter"
+            placeholder="全部模型"
+            allow-clear
+            style="width: 220px"
+            :options="modelOptions"
+            @change="onFilterChange"
+          />
         </a-space>
       </template>
-      <a-table :columns="columns" :data-source="calls" :loading="loadingCalls" :row-key="(r: { id: number }) => r.id"
-        size="middle" :pagination="{
+      <a-table
+        :columns="columns"
+        :data-source="calls"
+        :loading="loadingCalls"
+        :row-key="(r: { id: number }) => r.id"
+        size="middle"
+        :pagination="{
           current: page,
           pageSize,
           total,
@@ -425,7 +491,8 @@ onMounted(refreshAll);
           pageSizeOptions: ['10', '20', '50', '100'],
           showTotal: (t: number) => `共 ${t} 条`,
           onChange: handlePageChange,
-        }">
+        }"
+      >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'ts'">
             {{ fmtTime(record.ts) }}
@@ -436,7 +503,9 @@ onMounted(refreshAll);
           <template v-else-if="column.key === 'note'">
             <span class="cell-muted">{{ record.note || "—" }}</span>
           </template>
-          <template v-else-if="['prompt_tokens', 'completion_tokens', 'total_tokens'].includes(column.key)">
+          <template
+            v-else-if="['prompt_tokens', 'completion_tokens', 'total_tokens'].includes(column.key)"
+          >
             <span class="num">{{ (record[column.key] as number).toLocaleString() }}</span>
           </template>
         </template>

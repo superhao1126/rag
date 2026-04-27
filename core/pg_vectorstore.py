@@ -277,10 +277,13 @@ class PgVectorStore:
 
             for attempt in range(3):
                 try:
+                    from datetime import datetime
+                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3])
                     response = self.client.embeddings.create(
                         model=self.embedding_model,
                         input=batch,
                     )
+                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3])
                     all_embeddings.extend([item.embedding for item in response.data])
                     try:
                         usage = getattr(response, "usage", None)

@@ -124,7 +124,12 @@ onMounted(() => {
           <div class="popover-title">
             <span>LLM Token 用量</span>
             <span class="popover-actions">
-              <ReloadOutlined :spin="refreshing" class="popover-icon" title="刷新" @click="refreshLlmStats" />
+              <ReloadOutlined
+                :spin="refreshing"
+                class="popover-icon"
+                title="刷新"
+                @click="refreshLlmStats"
+              />
               <a class="popover-reset" @click="resetLlmStats">清零</a>
             </span>
           </div>
@@ -156,7 +161,8 @@ onMounted(() => {
               <div v-for="m in modelEntries" :key="m.name" class="td-model-row">
                 <span class="td-model-name">{{ m.name }}</span>
                 <span class="td-model-stats">
-                  in {{ m.prompt_tokens.toLocaleString() }} / out {{ m.completion_tokens.toLocaleString() }} ({{ m.calls }} 次)
+                  in {{ m.prompt_tokens.toLocaleString() }} / out
+                  {{ m.completion_tokens.toLocaleString() }} ({{ m.calls }} 次)
                 </span>
               </div>
             </div>

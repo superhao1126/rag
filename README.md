@@ -109,7 +109,7 @@
     ↓ POST /api/upload
 [0] upload queue.enqueue()    快速返回，后台 worker 串行消费
 [1] reader.read()             读取解析（PyMuPDF → OCR fallback）
-[2] cleaner.clean()           清洗去噪（控制字符 / HTML / 页眉页脚 / CJK 空格）
+[2] cleaner.clean()           清洗去噪（结构保护 / HTML / 页眉页脚 / 噪声 token / CJK 空格）
 [3] chunker.chunk()           切块（chunk_size=300, overlap=60）
 [4] vector_store.add()        embedding → 1024 维向量
 [5] pg_vectorstore.add_chunks 写入 rag_chunks + 刷新 BM25 缓存
@@ -122,6 +122,23 @@
 [D] LLM stream                SSE 流式返回
 [E] messages / llm_calls      对话与统计落库
 ```
+
+### 3.1 文本清理策略
+
+`core/cleaner.py` 的目标是**只降噪、不改写语义**。当前默认行为：
+
+| 能力 | 默认 | 说明 |
+| --- | --- | --- |
+| Unicode / HTML entity | 开启 | NFKC 归一化，并用 `html.unescape` 处理 `&nbsp;`、`&#32;`、`&#x20;` 等实体 |
+| 控制字符清理 | 开启 | 去除控制字符、零宽字符、BOM |
+| 结构化内容保护 | 开启 | 保护 fenced code、缩进代码、Markdown 表格、`$$` 公式块，避免后续规则破坏格式 |
+| HTML 清理 | 开启 | 删除 `<script>/<style>` 整块内容；仅剥离常见 HTML 标签，保留 `List<T>`、`<token>` 等正文占位符 |
+| 噪声 token | 开启 | 过滤长 hash/base64/JWT、超长 query value、OCR `�` 噪声等 |
+| 页眉页脚 / 重复行 / 纯标点行 | 开启 | 删除明确页码格式、达到阈值的连续重复行、纯标点行；纯数字行默认保留 |
+| 空白与 CJK | 开启 | 多空格合并、多空行压为单换行；中文间错误空格会合并，中英/数字混排会补空格 |
+| 隐私脱敏 | 关闭 | 可选替换 URL、Email、手机号为 `<URL>`、`<EMAIL>`、`<PHONE>` |
+
+`CleanReport.summary()` 会返回保留率、规则命中、删除行/字符数和风险提示。若出现 `low_retention`、`many_deleted_lines`、`many_html_tags`、`many_noise_tokens`，优先检查清理规则是否过强。
 
 ---
 
@@ -368,12 +385,35 @@ ORDER BY day, call_type;
 2. 默认 `USE_PG=false`，未配置数据库也可直接启动
 3. `USE_PG=true` 时，必须提供 `PG_URI` 或完整 `PG_*`
 
+### 文本清理配置
+
+清理规则支持通过 `.env` 或外部环境变量开关。未配置时使用默认值。
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `CLEAN_NORMALIZE_UNICODE` | `true` | NFKC 与 HTML entity 解码 |
+| `CLEAN_STRIP_CONTROL` | `true` | 控制字符、零宽字符、BOM |
+| `CLEAN_PROTECT_STRUCTURED` | `true` | 保护代码块、Markdown 表格、公式块 |
+| `CLEAN_STRIP_HTML` | `true` | 删除 script/style 与常见 HTML 标签 |
+| `CLEAN_DROP_LONG_GIBBERISH` | `true` | 删除长特殊符号乱码 |
+| `CLEAN_DROP_NOISE_TOKENS` | `true` | 删除长 hash/base64/JWT/OCR 噪声 |
+| `CLEAN_LONG_TOKEN_THRESHOLD` | `48` | 长 token 判定阈值 |
+| `CLEAN_REDACT_PRIVACY` | `false` | URL/Email/手机号脱敏 |
+| `CLEAN_DROP_PAGE_FOOTER` | `true` | 删除明确页码格式 |
+| `CLEAN_DROP_DUP_LINES` | `true` | 删除达到阈值的连续重复行 |
+| `CLEAN_DUP_LINE_THRESHOLD` | `3` | 连续重复行阈值 |
+| `CLEAN_DROP_PUNCT_ONLY` | `true` | 删除纯标点/符号行 |
+| `CLEAN_COLLAPSE_WHITESPACE` | `true` | 多空格、多空行规范化 |
+| `CLEAN_CJK_FRIENDLY` | `true` | 合并中文之间错误空格 |
+| `CLEAN_CJK_ALNUM_SPACING` | `true` | 中文与英文/数字之间补空格 |
+
 ### 注意事项
 
 - 标准上传接口已改为进程内任务队列，避免重活阻塞 FastAPI 请求线程
 - `/api/upload/stream` 仍保留直连处理，便于调试实时进度
 - `UnifiedResponseMiddleware` 会把原 HTTP 状态写进 body 的 `code`
 - `paddleocr` 体积较大，CI / 离线环境建议关闭 OCR
+- 清理报告出现低保留率或大量删除行时，应先降低相关 `CLEAN_*` 强度再重新导入文档
 - `EMBEDDING_DIMENSION` 变更时，需同步数据库 `vector(N)`
 - `CORS` 当前为 `*`，上线必须收紧
 - 前端命令前请先执行 `fnm use 24`
@@ -387,6 +427,8 @@ ORDER BY day, call_type;
 | 上传 202 但前端报错 | 检查前端是否接受 2xx 范围 |
 | 上传长时间不完成 | 检查 `/api/upload/queue` 是否堆积，或看服务日志中的 upload-queue |
 | 检索召回为空 | 看 `rag_chunks` 是否有数据，BM25 缓存是否刷新 |
+| 上传后召回内容缺字段 | 查看清理 summary 的删除行/字符数和风险提示，必要时关闭 `CLEAN_DROP_PAGE_FOOTER` / `CLEAN_DROP_NOISE_TOKENS` |
+| Markdown 表格或代码被破坏 | 确认 `CLEAN_PROTECT_STRUCTURED=true`，并补充对应回归样例 |
 | OCR ImportError | 关闭 `OCR_ENABLED` 或补装 OCR 依赖 |
 | pgvector 维度不匹配 | 检查模型维度与 `vector(N)` |
 | 前端 lint 报 engine/lifecycle | 确认已 `fnm use 24` 且使用 pnpm |

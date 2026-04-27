@@ -38,6 +38,16 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+
 class Config:
     """RAG 系统配置参数"""
 
@@ -105,16 +115,21 @@ class Config:
 
     # ---- 文本清洗去噪（reader → cleaner → chunker）----
     # 每一步都可独立开关，方便针对不同文档类型微调
-    CLEAN_NORMALIZE_UNICODE  = True   # S1: NFKC 规范化 + HTML 实体替换（全角→半角）
-    CLEAN_STRIP_CONTROL      = True   # S2: 去控制字符 / 零宽字符 / BOM
-    CLEAN_STRIP_HTML         = True   # S3: 去 HTML <script>/<style>/裸标签
-    CLEAN_DROP_LONG_GIBBERISH= True   # S4: 去连续 >=30 位的乱码 token（PDF 图层错位）
-    CLEAN_DROP_PAGE_FOOTER   = True   # S5: 去页眉页脚 (第 X 页 / Page X of Y / 单数字行)
-    CLEAN_DROP_DUP_LINES     = True   # S5: 去连续重复行（水印 / 装订残留）
-    CLEAN_DROP_PUNCT_ONLY    = True   # S5: 去仅由标点 / 符号组成的行
-    CLEAN_COLLAPSE_WHITESPACE= True   # S6: 多空格→1 个；多空行→最多 2 行
-    CLEAN_CJK_FRIENDLY       = True   # S7: 合并中文之间被 PDF 错误插入的空格
-    CLEAN_DUP_LINE_THRESHOLD = 3      # 连续 >= N 行完全相同才视为噪声删除
+    CLEAN_NORMALIZE_UNICODE  = _env_flag("CLEAN_NORMALIZE_UNICODE", True)    # S1: NFKC + HTML 实体
+    CLEAN_STRIP_CONTROL      = _env_flag("CLEAN_STRIP_CONTROL", True)        # S2: 控制字符 / 零宽 / BOM
+    CLEAN_STRIP_HTML         = _env_flag("CLEAN_STRIP_HTML", True)           # S3: HTML <script>/<style>/裸标签
+    CLEAN_DROP_LONG_GIBBERISH= _env_flag("CLEAN_DROP_LONG_GIBBERISH", True)  # S4: 特殊符号长乱码
+    CLEAN_DROP_NOISE_TOKENS  = _env_flag("CLEAN_DROP_NOISE_TOKENS", True)    # S4: hash/base64/JWT/OCR 噪声
+    CLEAN_REDACT_PRIVACY     = _env_flag("CLEAN_REDACT_PRIVACY", False)      # URL/Email/手机号脱敏
+    CLEAN_DROP_PAGE_FOOTER   = _env_flag("CLEAN_DROP_PAGE_FOOTER", True)     # S5: 页眉页脚
+    CLEAN_DROP_DUP_LINES     = _env_flag("CLEAN_DROP_DUP_LINES", True)       # S5: 连续重复行
+    CLEAN_DROP_PUNCT_ONLY    = _env_flag("CLEAN_DROP_PUNCT_ONLY", True)      # S5: 纯标点行
+    CLEAN_COLLAPSE_WHITESPACE= _env_flag("CLEAN_COLLAPSE_WHITESPACE", True)  # S6: 空白规范化
+    CLEAN_CJK_FRIENDLY       = _env_flag("CLEAN_CJK_FRIENDLY", True)         # S7: 中文间空格修复
+    CLEAN_CJK_ALNUM_SPACING  = _env_flag("CLEAN_CJK_ALNUM_SPACING", True)    # 中英/数字混排补空格
+    CLEAN_PROTECT_STRUCTURED = _env_flag("CLEAN_PROTECT_STRUCTURED", True)   # Markdown 表格 / 代码块 / 公式块
+    CLEAN_DUP_LINE_THRESHOLD = _env_int("CLEAN_DUP_LINE_THRESHOLD", 3)       # 连续 >= N 行完全相同才视为噪声
+    CLEAN_LONG_TOKEN_THRESHOLD = _env_int("CLEAN_LONG_TOKEN_THRESHOLD", 48)  # 长 hash/base64 token 阈值
 
     # ---- 交互 ----
     STREAM = True          # 是否启用流式输出

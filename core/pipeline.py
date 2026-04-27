@@ -80,6 +80,11 @@ class RAGPipeline:
             drop_punct_only    = getattr(self.config, "CLEAN_DROP_PUNCT_ONLY", True),
             collapse_whitespace= getattr(self.config, "CLEAN_COLLAPSE_WHITESPACE", True),
             cjk_friendly       = getattr(self.config, "CLEAN_CJK_FRIENDLY", True),
+            protect_structured = getattr(self.config, "CLEAN_PROTECT_STRUCTURED", True),
+            normalize_cjk_alnum_spacing = getattr(self.config, "CLEAN_CJK_ALNUM_SPACING", True),
+            drop_noise_tokens  = getattr(self.config, "CLEAN_DROP_NOISE_TOKENS", True),
+            redact_privacy     = getattr(self.config, "CLEAN_REDACT_PRIVACY", False),
+            long_token_threshold = getattr(self.config, "CLEAN_LONG_TOKEN_THRESHOLD", 48),
             dup_line_threshold = getattr(self.config, "CLEAN_DUP_LINE_THRESHOLD", 3),
         ))
 
@@ -164,7 +169,7 @@ class RAGPipeline:
         if not text.strip():
             print("  ⚠️ 清洗后内容为空，跳过。")
             return
-        print(f"  ② {clean_report.summary()}")
+        print(f"  ② 清洗完成： {clean_report.summary()}")
 
         # ③ 切块：API 文档走边界感知分块；普通文档走滑动窗口分块
         chunks = self.chunker.chunk(text, source=source_name)
