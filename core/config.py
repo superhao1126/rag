@@ -58,8 +58,10 @@ class Config:
     EMBEDDING_DIMENSION = 1024   # 向量维度（text-embedding-v3 为 1024）
 
     # ---- 文本分块 ----
-    CHUNK_SIZE = 300       # 每个文本块的最大字符数（API文档适合更小的chunk）
-    CHUNK_OVERLAP = 60     # 相邻文本块的重叠字符数
+    CHUNK_SIZE = _env_int("CHUNK_SIZE", 350)                 # 普通语义块目标上限
+    CHUNK_OVERLAP = _env_int("CHUNK_OVERLAP", 80)            # 语义重叠目标字符数
+    CHUNK_MIN_SIZE = _env_int("CHUNK_MIN_SIZE", 120)         # 小于该值优先合并
+    API_MAX_CHUNK_SIZE = _env_int("API_MAX_CHUNK_SIZE", 800) # API 单块上限
 
     # ---- 检索 ----
     TOP_K = 5              # 检索返回的最相关片段数量（提高覆盖率）

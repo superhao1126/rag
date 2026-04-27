@@ -110,7 +110,7 @@
 [0] upload queue.enqueue()    快速返回，后台 worker 串行消费
 [1] reader.read()             读取解析（PyMuPDF → OCR fallback）
 [2] cleaner.clean()           清洗去噪（结构保护 / HTML / 页眉页脚 / 噪声 token / CJK 空格）
-[3] chunker.chunk()           切块（chunk_size=300, overlap=60）
+[3] chunker.chunk()           语义切块（chunk_size=350, overlap=80, min=120, api_max=800）
 [4] vector_store.add()        embedding → 1024 维向量
 [5] pg_vectorstore.add_chunks 写入 rag_chunks + 刷新 BM25 缓存
 
@@ -139,6 +139,19 @@
 | 隐私脱敏 | 关闭 | 可选替换 URL、Email、手机号为 `<URL>`、`<EMAIL>`、`<PHONE>` |
 
 `CleanReport.summary()` 会返回保留率、规则命中、删除行/字符数和风险提示。若出现 `low_retention`、`many_deleted_lines`、`many_html_tags`、`many_noise_tokens`，优先检查清理规则是否过强。
+
+### 3.2 文本分块策略
+
+`core/chunker.py` 面向 RAG 检索做语义分块：
+
+| 能力 | 说明 |
+| --- | --- |
+| 精确偏移 | 逐行累计绝对 offset，不再用 `text.find`，重复文本的 `start/end` 也准确 |
+| 普通文档语义切分 | 优先按段落、句号/分号、逗号、空格寻找断点，最后才强制截断 |
+| 语义 overlap | overlap 以语义单元回补，避免半句话重叠 |
+| 最小块合并 | 小于 `CHUNK_MIN_SIZE` 的碎块优先并入上一块，减少低价值向量 |
+| API 感知 | 识别 HTTP 方法、路径标签、Markdown 接口标题；接口过长时按 `API_MAX_CHUNK_SIZE` 二次切分 |
+| 元数据 | chunk 增加 `chunk_type`、`is_long_split`、`title`，便于后续检索路由和可视化 |
 
 ---
 
@@ -407,6 +420,15 @@ ORDER BY day, call_type;
 | `CLEAN_CJK_FRIENDLY` | `true` | 合并中文之间错误空格 |
 | `CLEAN_CJK_ALNUM_SPACING` | `true` | 中文与英文/数字之间补空格 |
 
+### 文本分块配置
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `CHUNK_SIZE` | `350` | 普通语义块目标上限 |
+| `CHUNK_OVERLAP` | `80` | 语义单元重叠目标字符数 |
+| `CHUNK_MIN_SIZE` | `120` | 小于该值的碎块优先合并 |
+| `API_MAX_CHUNK_SIZE` | `800` | API 接口块二次切分上限 |
+
 ### 注意事项
 
 - 标准上传接口已改为进程内任务队列，避免重活阻塞 FastAPI 请求线程
@@ -429,6 +451,8 @@ ORDER BY day, call_type;
 | 检索召回为空 | 看 `rag_chunks` 是否有数据，BM25 缓存是否刷新 |
 | 上传后召回内容缺字段 | 查看清理 summary 的删除行/字符数和风险提示，必要时关闭 `CLEAN_DROP_PAGE_FOOTER` / `CLEAN_DROP_NOISE_TOKENS` |
 | Markdown 表格或代码被破坏 | 确认 `CLEAN_PROTECT_STRUCTURED=true`，并补充对应回归样例 |
+| 分块定位或高亮不准 | 检查 chunk 的 `start/end` 是否对应原文，重复文本场景应使用新版逐行 offset |
+| API 文档单块过大 | 调低 `API_MAX_CHUNK_SIZE`，或检查接口标题/路径是否被识别为边界 |
 | OCR ImportError | 关闭 `OCR_ENABLED` 或补装 OCR 依赖 |
 | pgvector 维度不匹配 | 检查模型维度与 `vector(N)` |
 | 前端 lint 报 engine/lifecycle | 确认已 `fnm use 24` 且使用 pnpm |

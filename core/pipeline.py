@@ -67,6 +67,8 @@ class RAGPipeline:
         self.chunker = TextChunker(
             chunk_size=self.config.CHUNK_SIZE,
             chunk_overlap=self.config.CHUNK_OVERLAP,
+            min_chunk_size=getattr(self.config, "CHUNK_MIN_SIZE", 120),
+            api_max_chunk_size=getattr(self.config, "API_MAX_CHUNK_SIZE", 800),
         )
         # 文本清洗器（无状态，可全局复用）—— 介于 reader 与 chunker 之间
         # 从 Config 读取每条规则的开关，便于按文档类型微调

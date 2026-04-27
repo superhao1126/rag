@@ -329,7 +329,6 @@ function jumpToConversation(it: FeedbackItem) {
 .feedback-page {
   padding: 20px 28px 32px;
   width: 100%;
-  max-width: 1100px;
   margin: 0 auto;
   height: 100%;
   overflow-y: auto;
